@@ -24,6 +24,7 @@ export type TPamDiscoverySource = {
   status: string;
   totalResources: number;
   totalAccounts: number;
+  totalDependencies: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -34,7 +35,7 @@ export type TPamDiscoverySourceRunProgress = {
     completedAt?: string;
     error?: string;
   };
-  dependencyScan?: {
+  machineEnumeration?: {
     status: "running" | "completed" | "failed" | "skipped";
     totalMachines?: number;
     scannedMachines?: number;
@@ -78,6 +79,7 @@ export type TDiscoveredResource = {
     osVersion?: string;
     osVersionDetail?: string;
   };
+  dependencyCount?: number;
 };
 
 export type TDiscoveredAccountMetadata = {
@@ -85,7 +87,7 @@ export type TDiscoveredAccountMetadata = {
   adGuid?: string;
   displayName?: string;
   userPrincipalName?: string;
-  lastLogonTimestamp?: string;
+  lastLogon?: string;
 };
 
 export type TDiscoveredAccount = {
@@ -98,6 +100,7 @@ export type TDiscoveredAccount = {
   lastDiscoveredAt: string;
   isStale: boolean;
   internalMetadata?: TDiscoveredAccountMetadata;
+  dependencyCount?: number;
   createdAt: string;
 };
 

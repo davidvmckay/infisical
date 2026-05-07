@@ -21,6 +21,10 @@ import {
   AzureAppConfigurationSyncSchema
 } from "@app/services/secret-sync/azure-app-configuration";
 import { AzureDevOpsSyncListItemSchema, AzureDevOpsSyncSchema } from "@app/services/secret-sync/azure-devops";
+import {
+  AzureEntraIdScimSyncListItemSchema,
+  AzureEntraIdScimSyncSchema
+} from "@app/services/secret-sync/azure-entra-id-scim";
 import { AzureKeyVaultSyncListItemSchema, AzureKeyVaultSyncSchema } from "@app/services/secret-sync/azure-key-vault";
 import { BitbucketSyncListItemSchema, BitbucketSyncSchema } from "@app/services/secret-sync/bitbucket";
 import { CamundaSyncListItemSchema, CamundaSyncSchema } from "@app/services/secret-sync/camunda";
@@ -35,10 +39,15 @@ import {
   CloudflareWorkersSyncSchema
 } from "@app/services/secret-sync/cloudflare-workers/cloudflare-workers-schemas";
 import { DatabricksSyncListItemSchema, DatabricksSyncSchema } from "@app/services/secret-sync/databricks";
+import { DevinSyncListItemSchema, DevinSyncSchema } from "@app/services/secret-sync/devin";
 import {
   DigitalOceanAppPlatformSyncListItemSchema,
   DigitalOceanAppPlatformSyncSchema
 } from "@app/services/secret-sync/digital-ocean-app-platform";
+import {
+  ExternalInfisicalSyncListItemSchema,
+  ExternalInfisicalSyncSchema
+} from "@app/services/secret-sync/external-infisical";
 import { FlyioSyncListItemSchema, FlyioSyncSchema } from "@app/services/secret-sync/flyio";
 import { GcpSyncListItemSchema, GcpSyncSchema } from "@app/services/secret-sync/gcp";
 import { GitHubSyncListItemSchema, GitHubSyncSchema } from "@app/services/secret-sync/github";
@@ -50,11 +59,15 @@ import { LaravelForgeSyncListItemSchema, LaravelForgeSyncSchema } from "@app/ser
 import { NetlifySyncListItemSchema, NetlifySyncSchema } from "@app/services/secret-sync/netlify";
 import { NorthflankSyncListItemSchema, NorthflankSyncSchema } from "@app/services/secret-sync/northflank";
 import { OctopusDeploySyncListItemSchema, OctopusDeploySyncSchema } from "@app/services/secret-sync/octopus-deploy";
+import { OnaSyncListItemSchema, OnaSyncSchema } from "@app/services/secret-sync/ona";
+import { OvhSyncListItemSchema, OvhSyncSchema } from "@app/services/secret-sync/ovh";
 import { RailwaySyncListItemSchema, RailwaySyncSchema } from "@app/services/secret-sync/railway/railway-sync-schemas";
 import { RenderSyncListItemSchema, RenderSyncSchema } from "@app/services/secret-sync/render/render-sync-schemas";
+import { SnowflakeSyncListItemSchema, SnowflakeSyncSchema } from "@app/services/secret-sync/snowflake";
 import { SupabaseSyncListItemSchema, SupabaseSyncSchema } from "@app/services/secret-sync/supabase";
 import { TeamCitySyncListItemSchema, TeamCitySyncSchema } from "@app/services/secret-sync/teamcity";
 import { TerraformCloudSyncListItemSchema, TerraformCloudSyncSchema } from "@app/services/secret-sync/terraform-cloud";
+import { TravisCISyncListItemSchema, TravisCISyncSchema } from "@app/services/secret-sync/travis-ci";
 import { VercelSyncListItemSchema, VercelSyncSchema } from "@app/services/secret-sync/vercel";
 import { WindmillSyncListItemSchema, WindmillSyncSchema } from "@app/services/secret-sync/windmill";
 import { ZabbixSyncListItemSchema, ZabbixSyncSchema } from "@app/services/secret-sync/zabbix";
@@ -94,7 +107,14 @@ const SecretSyncSchema = z.discriminatedUnion("destination", [
   LaravelForgeSyncSchema,
   ChefSyncSchema,
   OctopusDeploySyncSchema,
-  CircleCISyncSchema
+  CircleCISyncSchema,
+  AzureEntraIdScimSyncSchema,
+  ExternalInfisicalSyncSchema,
+  OvhSyncSchema,
+  DevinSyncSchema,
+  OnaSyncSchema,
+  TravisCISyncSchema,
+  SnowflakeSyncSchema
 ]);
 
 const SecretSyncOptionsSchema = z.discriminatedUnion("destination", [
@@ -132,7 +152,14 @@ const SecretSyncOptionsSchema = z.discriminatedUnion("destination", [
   LaravelForgeSyncListItemSchema,
   ChefSyncListItemSchema,
   OctopusDeploySyncListItemSchema,
-  CircleCISyncListItemSchema
+  CircleCISyncListItemSchema,
+  AzureEntraIdScimSyncListItemSchema,
+  ExternalInfisicalSyncListItemSchema,
+  OvhSyncListItemSchema,
+  DevinSyncListItemSchema,
+  OnaSyncListItemSchema,
+  TravisCISyncListItemSchema,
+  SnowflakeSyncListItemSchema
 ]);
 
 export const registerSecretSyncRouter = async (server: FastifyZodProvider) => {

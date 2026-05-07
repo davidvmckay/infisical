@@ -7,6 +7,7 @@ import { registerAwsParameterStoreSyncRouter } from "./aws-parameter-store-sync-
 import { registerAwsSecretsManagerSyncRouter } from "./aws-secrets-manager-sync-router";
 import { registerAzureAppConfigurationSyncRouter } from "./azure-app-configuration-sync-router";
 import { registerAzureDevOpsSyncRouter } from "./azure-devops-sync-router";
+import { registerAzureEntraIdScimSyncRouter } from "./azure-entra-id-scim-sync-router";
 import { registerAzureKeyVaultSyncRouter } from "./azure-key-vault-sync-router";
 import { registerBitbucketSyncRouter } from "./bitbucket-sync-router";
 import { registerCamundaSyncRouter } from "./camunda-sync-router";
@@ -15,7 +16,9 @@ import { registerCircleCISyncRouter } from "./circleci-sync-router";
 import { registerCloudflarePagesSyncRouter } from "./cloudflare-pages-sync-router";
 import { registerCloudflareWorkersSyncRouter } from "./cloudflare-workers-sync-router";
 import { registerDatabricksSyncRouter } from "./databricks-sync-router";
+import { registerDevinSyncRouter } from "./devin-sync-router";
 import { registerDigitalOceanAppPlatformSyncRouter } from "./digital-ocean-app-platform-sync-router";
+import { registerExternalInfisicalSyncRouter } from "./external-infisical-sync-router";
 import { registerFlyioSyncRouter } from "./flyio-sync-router";
 import { registerGcpSyncRouter } from "./gcp-sync-router";
 import { registerGitHubSyncRouter } from "./github-sync-router";
@@ -27,11 +30,15 @@ import { registerLaravelForgeSyncRouter } from "./laravel-forge-sync-router";
 import { registerNetlifySyncRouter } from "./netlify-sync-router";
 import { registerNorthflankSyncRouter } from "./northflank-sync-router";
 import { registerOctopusDeploySyncRouter } from "./octopus-deploy-sync-router";
+import { registerOnaSyncRouter } from "./ona-sync-router";
+import { registerOvhSyncRouter } from "./ovh-sync-router";
 import { registerRailwaySyncRouter } from "./railway-sync-router";
 import { registerRenderSyncRouter } from "./render-sync-router";
+import { registerSnowflakeSyncRouter } from "./snowflake-sync-router";
 import { registerSupabaseSyncRouter } from "./supabase-sync-router";
 import { registerTeamCitySyncRouter } from "./teamcity-sync-router";
 import { registerTerraformCloudSyncRouter } from "./terraform-cloud-sync-router";
+import { registerTravisCISyncRouter } from "./travis-ci-sync-router";
 import { registerVercelSyncRouter } from "./vercel-sync-router";
 import { registerWindmillSyncRouter } from "./windmill-sync-router";
 import { registerZabbixSyncRouter } from "./zabbix-sync-router";
@@ -73,5 +80,12 @@ export const SECRET_SYNC_REGISTER_ROUTER_MAP: Record<SecretSync, (server: Fastif
   [SecretSync.LaravelForge]: registerLaravelForgeSyncRouter,
   [SecretSync.Chef]: registerChefSyncRouter,
   [SecretSync.OctopusDeploy]: registerOctopusDeploySyncRouter,
-  [SecretSync.CircleCI]: registerCircleCISyncRouter
+  [SecretSync.CircleCI]: registerCircleCISyncRouter,
+  [SecretSync.AzureEntraIdScim]: registerAzureEntraIdScimSyncRouter,
+  [SecretSync.ExternalInfisical]: registerExternalInfisicalSyncRouter,
+  [SecretSync.OVH]: registerOvhSyncRouter,
+  [SecretSync.Devin]: registerDevinSyncRouter,
+  [SecretSync.Ona]: registerOnaSyncRouter,
+  [SecretSync.TravisCI]: registerTravisCISyncRouter,
+  [SecretSync.Snowflake]: registerSnowflakeSyncRouter
 };

@@ -49,6 +49,7 @@ export type TCreateCaDTO =
       notAfter?: string;
       maxPathLength?: number | null;
       keyAlgorithm: CertKeyAlgorithm;
+      crlDistributionPointUrls?: string[];
     }
   | ({
       isInternal: false;
@@ -66,6 +67,7 @@ export type TCreateCaDTO =
       notAfter?: string;
       maxPathLength?: number | null;
       keyAlgorithm: CertKeyAlgorithm;
+      crlDistributionPointUrls?: string[];
     } & Omit<TProjectPermission, "projectId">);
 
 export type TGetCaDTO = {
@@ -78,12 +80,14 @@ export type TUpdateCaDTO =
       caId: string;
       name?: string;
       status?: CaStatus;
+      crlDistributionPointUrls?: string[];
     }
   | ({
       isInternal: false;
       caId: string;
       name?: string;
       status?: CaStatus;
+      crlDistributionPointUrls?: string[];
     } & Omit<TProjectPermission, "projectId">);
 
 export type TDeleteCaDTO = {
@@ -98,14 +102,40 @@ export type TGenerateRootCaCertificateDTO = {
 } & Omit<TProjectPermission, "projectId">;
 
 export type TGetCaCsrDTO = {
-  caId: string;
-} & Omit<TProjectPermission, "projectId">;
+  isInternal?: boolean;
+  maxPathLength?: number;
+} & (
+  | {
+      isInternal: true;
+      caId: string;
+      actorId?: undefined;
+      actorAuthMethod?: undefined;
+      actor?: undefined;
+      actorOrgId?: undefined;
+    }
+  | ({
+      isInternal?: false;
+      caId: string;
+    } & Omit<TProjectPermission, "projectId">)
+);
 
-export type TRenewCaCertDTO = {
-  caId: string;
-  notAfter: string;
-  type: CaRenewalType;
-} & Omit<TProjectPermission, "projectId">;
+export type TRenewCaCertDTO =
+  | {
+      isInternal: true;
+      caId: string;
+      notAfter: string;
+      type?: CaRenewalType;
+      actorId?: undefined;
+      actorAuthMethod?: undefined;
+      actor?: undefined;
+      actorOrgId?: undefined;
+    }
+  | ({
+      isInternal?: false;
+      caId: string;
+      notAfter: string;
+      type: CaRenewalType;
+    } & Omit<TProjectPermission, "projectId">);
 
 export type TGetCaCertsDTO = {
   caId: string;

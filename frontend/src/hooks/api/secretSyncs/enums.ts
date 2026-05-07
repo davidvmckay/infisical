@@ -33,7 +33,14 @@ export enum SecretSync {
   LaravelForge = "laravel-forge",
   Chef = "chef",
   OctopusDeploy = "octopus-deploy",
-  CircleCI = "circleci"
+  CircleCI = "circleci",
+  AzureEntraIdScim = "azure-entra-id-scim",
+  ExternalInfisical = "external-infisical",
+  OVH = "ovh",
+  Devin = "devin",
+  Ona = "ona",
+  TravisCI = "travis-ci",
+  Snowflake = "snowflake"
 }
 
 export enum SecretSyncStatus {

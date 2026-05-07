@@ -16,6 +16,7 @@ export const PgSqlLock = {
   SuperAdminInit: 2024,
   KmsRootKeyInit: 2025,
   SanitizedSchemaGeneration: 2026,
+  EmailDomainCreationLock: () => pgAdvisoryLockHashText(`org-email-domain-creation`),
   OrgGatewayRootCaInit: (orgId: string) => pgAdvisoryLockHashText(`org-gateway-root-ca:${orgId}`),
   OrgGatewayCertExchange: (orgId: string) => pgAdvisoryLockHashText(`org-gateway-cert-exchange:${orgId}`),
   SecretRotationV2Creation: (folderId: string) => pgAdvisoryLockHashText(`secret-rotation-v2-creation:${folderId}`),
@@ -30,6 +31,7 @@ export const PgSqlLock = {
   IdentityLogin: (identityId: string, nonce: string) => pgAdvisoryLockHashText(`identity-login:${identityId}:${nonce}`),
   PamResourceSshCaInit: (resourceId: string) => pgAdvisoryLockHashText(`pam-resource-ssh-ca-init:${resourceId}`),
   CreateIdentity: (orgId: string) => pgAdvisoryLockHashText(`create-identity:${orgId}`),
+  CreateGateway: (orgId: string) => pgAdvisoryLockHashText(`create-gateway:${orgId}`),
   AccessSharedSecret: (sharedSecretId: string) => pgAdvisoryLockHashText(`access-shared-secret:${sharedSecretId}`),
   KmsOrgKeyCreation: (orgId: string) => pgAdvisoryLockHashText(`kms-org-key:${orgId}`),
   KmsOrgDataKeyCreation: (orgId: string) => pgAdvisoryLockHashText(`kms-org-data-key:${orgId}`),
@@ -61,6 +63,8 @@ export const KeyStorePrefixes = {
   SecretSyncLastRunTimestamp: (syncId: string) => `secret-sync-last-run-${syncId}` as const,
   IdentityAccessTokenStatusUpdate: (identityAccessTokenId: string) =>
     `identity-access-token-status:${identityAccessTokenId}`,
+  IdentityTokenUsesRemaining: (identityId: string, jti: string) =>
+    `identity-token-uses-remaining:${identityId}:${jti}` as const,
   ServiceTokenStatusUpdate: (serviceTokenId: string) => `service-token-status:${serviceTokenId}`,
   GatewayIdentityCredential: (identityId: string) => `gateway-credentials:${identityId}`,
   ActiveSSEConnectionsSet: (projectId: string, identityId: string) =>
@@ -68,24 +72,17 @@ export const KeyStorePrefixes = {
   ActiveSSEConnections: (projectId: string, identityId: string, connectionId: string) =>
     `sse-connections:${projectId}:${identityId}:${connectionId}` as const,
 
-  ProjectPermission: (
-    projectId: string,
-    version: number,
-    actorType: string,
-    actorId: string,
-    actionProjectType: string
-  ) => `project-permission:${projectId}:${version}:${actorType}:${actorId}:${actionProjectType}` as const,
-  ProjectPermissionDalVersion: (projectId: string) => `project-permission:${projectId}:dal-version` as const,
-  UserProjectPermissionPattern: (userId: string) => `project-permission:*:*:USER:${userId}:*` as const,
-  IdentityProjectPermissionPattern: (identityId: string) => `project-permission:*:*:IDENTITY:${identityId}:*` as const,
-  GroupMemberProjectPermissionPattern: (projectId: string, groupId: string) =>
-    `group-member-project-permission:${projectId}:${groupId}:*` as const,
+  ProjectPermissionMarker: (projectId: string, actorType: string, actorId: string, actionProjectType: string) =>
+    `project-permission-marker:${projectId}:${actorType}:${actorId}:${actionProjectType}` as const,
+  ProjectPermissionData: (projectId: string, actorType: string, actorId: string, actionProjectType: string) =>
+    `project-permission-data:${projectId}:${actorType}:${actorId}:${actionProjectType}` as const,
 
   PkiAcmeNonce: (nonce: string) => `pki-acme-nonce:${nonce}` as const,
   MfaSession: (mfaSessionId: string) => `mfa-session:${mfaSessionId}` as const,
   WebAuthnChallenge: (userId: string) => `webauthn-challenge:${userId}` as const,
   UserMfaLockoutLock: (userId: string) => `user-mfa-lockout-lock:${userId}` as const,
   UserMfaUnlockEmailSent: (userId: string) => `user-mfa-unlock-email-sent:${userId}` as const,
+  UsedTotpCode: (userId: string, code: string) => `used-totp-code:${userId}:${code}` as const,
 
   AiMcpServerOAuth: (sessionId: string) => `ai-mcp-server-oauth:${sessionId}` as const,
 
@@ -99,18 +96,65 @@ export const KeyStorePrefixes = {
   ProjectSSEConnection: (projectId: string, connectionId: string) =>
     `project-sse-conn:${projectId}:${connectionId}` as const,
 
-  ProjectDeleteLock: (projectId: string) => `project-delete-lock-${projectId}` as const
+  ProjectDeleteLock: (projectId: string) => `project-delete-lock-${projectId}` as const,
+
+  TelemetryIdentifyIdentity: (dedupKey: string) => `telemetry-identify-identity:${dedupKey}` as const,
+  TelemetryGroupIdentify: (orgId: string) => `telemetry-group-identify:${orgId}` as const,
+  TelemetryIdentify: (distinctId: string) => `telemetry-identify:${distinctId}` as const,
+  SecretEtag: (projectId: string, dayStamp: string) => `secret-etag:${projectId}:${dayStamp}` as const,
+
+  PamAwsIamAccessKeyId: (sessionId: string) => `pam-aws-iam-access-key-id:${sessionId}` as const,
+
+  CertDashboardStats: (projectId: string) => `cert-dashboard-stats:${projectId}` as const,
+  CertActivityTrend: (projectId: string, range: string) => `cert-activity-trend:${projectId}:${range}` as const,
+  CertPqcTrend: (projectId: string, range: string) => `cert-pqc-trend:${projectId}:${range}` as const,
+  RefreshTokenGrace: (sessionId: string) => `refresh-token-grace:${sessionId}` as const,
+  InsightsCache: (projectId: string, endpoint: string) => `insights-cache:${projectId}:${endpoint}` as const,
+
+  AdminConfig: "infisical-admin-cfg",
+  InvalidatingCache: "invalidating-cache",
+  SecretManagerCachePattern: "secret-manager:*",
+  AuditLogMigrationAlert: "audit-log-migration-alert-last-row-count",
+  LicenseCloudPlan: (orgId: string) => `infisical-cloud-plan-${orgId}` as const,
+  IdentityLockoutState: (identityId: string, authMethod: string, slug: string) =>
+    `lockout:identity:${identityId}:${authMethod}:${slug}` as const,
+  IdentityLockoutStateByMethodPattern: (identityId: string, authMethod: string) =>
+    `lockout:identity:${identityId}:${authMethod}:*` as const,
+  IdentityLockoutStatePattern: (identityId: string) => `lockout:identity:${identityId}:*` as const,
+
+  TelemetryEvent: (event: string, bucketId: string, distinctId: string, uuid: string) =>
+    `telemetry-event-${event}-${bucketId}-${distinctId}-${uuid}` as const,
+  TelemetryEventByBucketPattern: (event: string, bucketId: string) => `telemetry-event-${event}-${bucketId}-*` as const
 };
 
 export const KeyStoreTtls = {
   SetSyncSecretIntegrationLastRunTimestampInSeconds: 60,
   SetSecretSyncLastRunTimestampInSeconds: 60,
   AccessTokenStatusUpdateInSeconds: 120,
-  ProjectPermissionCacheInSeconds: 300, // 5 minutes
-  ProjectPermissionDalVersionTtl: "15m", // Project permission DAL version TTL
+  ProjectPermissionMarkerTtlSeconds: 10, // 10 seconds - short-lived marker for fingerprint validation
+  ProjectPermissionDataTtlSeconds: 600, // 10 minutes - longer-lived data payload
   MfaSessionInSeconds: 300, // 5 minutes
   WebAuthnChallengeInSeconds: 300, // 5 minutes
-  ProjectSSEConnectionTtlSeconds: 180 // Must be > heartbeat interval (60s) * 2
+  UsedTotpCodeInSeconds: 120, // covers the full ±30s acceptance window (window:1 → 90s) with margin
+  ProjectSSEConnectionTtlSeconds: 180, // Must be > heartbeat interval (60s) * 2
+  TelemetryIdentifyIdentityInSeconds: 86400, // 24 hours
+  RefreshTokenGraceInSeconds: 10,
+  InsightsCacheInSeconds: 300, // 5 minutes
+  AdminConfigInSeconds: 60,
+  InvalidatingCacheInSeconds: 1800, // 30 minutes max lock for cache invalidation job
+  AuditLogMigrationAlertInSeconds: 604800, // 7 days
+  LicenseCloudPlanInSeconds: 300, // 5 minutes
+  AiMcpEndpointOAuthFlowInSeconds: 300, // 5 minutes
+  AiMcpServerOAuthSessionInSeconds: 600, // 10 minutes
+  DashboardCacheInSeconds: 600, // 10 minutes
+  ProjectEnvironmentOperationMarkerInSeconds: 10,
+  UserMfaUnlockEmailSentInSeconds: 300, // 5 minutes
+  TelemetryGroupIdentifyInSeconds: 3600, // 1 hour
+  TelemetryAggregatedEventInSeconds: 600, // 10 minutes
+  SecretEtagInSeconds: 900, // 15 minutes
+  PkiAcmeNonceInSeconds: 300, // 5 minutes
+  GatewayRelayCredentialInSeconds: 600, // 10 minutes - TURN credential lifetime
+  SecretReplicationSuccessInSeconds: 10
 };
 
 type TDeleteItems = {
@@ -140,6 +184,12 @@ export type TKeyStoreFactory = {
     value: string | number | Buffer,
     prefix?: string
   ) => Promise<"OK">;
+  setItemWithExpiryNX: (
+    key: string,
+    expiryInSeconds: number | string,
+    value: string | number | Buffer,
+    prefix?: string
+  ) => Promise<"OK" | null>;
   deleteItem: (key: string) => Promise<number>;
   deleteItemsByKeyIn: (keys: string[]) => Promise<number>;
   deleteItems: (arg: TDeleteItems) => Promise<number>;
@@ -159,6 +209,9 @@ export type TKeyStoreFactory = {
     batchSize: number,
     maxEntries: number
   ) => Promise<{ entries: [string, string[]][]; lastId: string | null }>;
+  // hash operations
+  hashSet: (key: string, field: string, value: string) => Promise<number>;
+  hashGet: (key: string, field: string) => Promise<string | null>;
   // pg
   pgIncrementBy: (key: string, dto: { incr?: number; expiry?: string; tx?: Knex }) => Promise<number>;
   pgGetIntItem: (key: string, prefix?: string) => Promise<number | undefined>;
@@ -220,6 +273,13 @@ export const keyStoreFactory = (
     value: string | number | Buffer,
     prefix?: string
   ) => primaryRedis.set(prefix ? `${prefix}:${key}` : key, value, "EX", expiryInSeconds);
+
+  const setItemWithExpiryNX = async (
+    key: string,
+    expiryInSeconds: number | string,
+    value: string | number | Buffer,
+    prefix?: string
+  ) => primaryRedis.set(prefix ? `${prefix}:${key}` : key, value, "EX", expiryInSeconds, "NX");
 
   const deleteItem = async (key: string) => primaryRedis.del(key);
 
@@ -291,6 +351,10 @@ export const keyStoreFactory = (
 
   const pgGetIntItem = async (key: string, prefix?: string) =>
     keyValueStoreDAL.findOneInt(prefix ? `${prefix}:${key}` : key);
+
+  const hashSet = async (key: string, field: string, value: string) => primaryRedis.hset(key, field, value);
+
+  const hashGet = async (key: string, field: string) => primaryRedis.hget(key, field);
 
   // List operations
   const listPush = async (key: string, value: string) => primaryRedis.rpush(key, value);
@@ -376,6 +440,7 @@ export const keyStoreFactory = (
     getItem,
     setExpiry,
     setItemWithExpiry,
+    setItemWithExpiryNX,
     deleteItem,
     deleteItems,
     incrementBy,
@@ -388,6 +453,8 @@ export const keyStoreFactory = (
     getItems,
     pgGetIntItem,
     pgIncrementBy,
+    hashSet,
+    hashGet,
     listPush,
     listRange,
     listRemove,

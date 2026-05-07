@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { faPlus, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -18,6 +18,8 @@ import {
   Tabs
 } from "@app/components/v2";
 import { useOrganization, useSubscription } from "@app/context";
+import { SECONDS_PER_DAY } from "@app/helpers/datetime";
+import { accessTokenTtlSchema } from "@app/helpers/identityAuthSchemas";
 import {
   useAddIdentityAwsAuth,
   useGetIdentityAwsAuth,
@@ -28,34 +30,25 @@ import { UsePopUpState } from "@app/hooks/usePopUp";
 
 import { IdentityFormTab } from "./types";
 
-const schema = z
-  .object({
-    stsEndpoint: z.string(),
-    allowedPrincipalArns: z.string(),
-    allowedAccountIds: z.string(),
-    accessTokenTTL: z
-      .string()
-      .refine(
-        (value) => Number(value) <= 315360000,
-        "Access Token TTL cannot be greater than 315360000"
-      ),
-    accessTokenMaxTTL: z
-      .string()
-      .refine(
-        (value) => Number(value) <= 315360000,
-        "Access Token Max TTL cannot be greater than 315360000"
-      ),
-    accessTokenNumUsesLimit: z.string(),
-    accessTokenTrustedIps: z
-      .object({
-        ipAddress: z.string().max(50)
-      })
-      .array()
-      .min(1)
-  })
-  .required();
+const buildSchema = (maxAccessTokenTTL: number) =>
+  z
+    .object({
+      stsEndpoint: z.string(),
+      allowedPrincipalArns: z.string(),
+      allowedAccountIds: z.string(),
+      accessTokenTTL: accessTokenTtlSchema(maxAccessTokenTTL, "Access Token TTL"),
+      accessTokenMaxTTL: accessTokenTtlSchema(maxAccessTokenTTL, "Access Token Max TTL"),
+      accessTokenNumUsesLimit: z.string(),
+      accessTokenTrustedIps: z
+        .object({
+          ipAddress: z.string().max(50)
+        })
+        .array()
+        .min(1)
+    })
+    .required();
 
-export type FormData = z.infer<typeof schema>;
+export type FormData = z.infer<ReturnType<typeof buildSchema>>;
 
 type Props = {
   handlePopUpOpen: (
@@ -68,13 +61,15 @@ type Props = {
   ) => void;
   identityId?: string;
   isUpdate?: boolean;
+  maxAccessTokenTTL: number;
 };
 
 export const IdentityAwsAuthForm = ({
   handlePopUpOpen,
   handlePopUpToggle,
   identityId,
-  isUpdate
+  isUpdate,
+  maxAccessTokenTTL
 }: Props) => {
   const { currentOrg } = useOrganization();
   const orgId = currentOrg?.id || "";
@@ -90,20 +85,22 @@ export const IdentityAwsAuthForm = ({
     enabled: isUpdate
   });
 
+  const resolver = useMemo(() => zodResolver(buildSchema(maxAccessTokenTTL)), [maxAccessTokenTTL]);
+
   const {
     control,
     handleSubmit,
     reset,
     formState: { isSubmitting }
   } = useForm<FormData>({
-    resolver: zodResolver(schema),
+    resolver,
     defaultValues: {
       stsEndpoint: "https://sts.amazonaws.com/",
       allowedPrincipalArns: "",
       allowedAccountIds: "",
       accessTokenTTL: "2592000",
       accessTokenMaxTTL: "2592000",
-      accessTokenNumUsesLimit: "0",
+      accessTokenNumUsesLimit: "",
       accessTokenTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }]
     }
   });
@@ -122,7 +119,9 @@ export const IdentityAwsAuthForm = ({
         allowedAccountIds: data.allowedAccountIds,
         accessTokenTTL: String(data.accessTokenTTL),
         accessTokenMaxTTL: String(data.accessTokenMaxTTL),
-        accessTokenNumUsesLimit: String(data.accessTokenNumUsesLimit),
+        accessTokenNumUsesLimit: data.accessTokenNumUsesLimit
+          ? String(data.accessTokenNumUsesLimit)
+          : "",
         accessTokenTrustedIps: data.accessTokenTrustedIps.map(
           ({ ipAddress, prefix }: IdentityTrustedIp) => {
             return {
@@ -138,7 +137,7 @@ export const IdentityAwsAuthForm = ({
         allowedAccountIds: "",
         accessTokenTTL: "2592000",
         accessTokenMaxTTL: "2592000",
-        accessTokenNumUsesLimit: "0",
+        accessTokenNumUsesLimit: "",
         accessTokenTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }]
       });
     }
@@ -164,7 +163,7 @@ export const IdentityAwsAuthForm = ({
         identityId,
         accessTokenTTL: Number(accessTokenTTL),
         accessTokenMaxTTL: Number(accessTokenMaxTTL),
-        accessTokenNumUsesLimit: Number(accessTokenNumUsesLimit),
+        accessTokenNumUsesLimit: Number(accessTokenNumUsesLimit || "0"),
         accessTokenTrustedIps
       });
     } else {
@@ -176,7 +175,7 @@ export const IdentityAwsAuthForm = ({
         allowedAccountIds: allowedAccountIds || "",
         accessTokenTTL: Number(accessTokenTTL),
         accessTokenMaxTTL: Number(accessTokenMaxTTL),
-        accessTokenNumUsesLimit: Number(accessTokenNumUsesLimit),
+        accessTokenNumUsesLimit: Number(accessTokenNumUsesLimit || "0"),
         accessTokenTrustedIps
       });
       handlePopUpToggle("identityAuthMethod", false);
@@ -255,8 +254,9 @@ export const IdentityAwsAuthForm = ({
                 label="Access Token TTL (seconds)"
                 isError={Boolean(error)}
                 errorText={error?.message}
+                helperText={`Max: ${Math.floor(maxAccessTokenTTL / SECONDS_PER_DAY)} days`}
               >
-                <Input {...field} placeholder="2592000" type="number" min="0" step="1" />
+                <Input {...field} placeholder="2592000" type="number" min="1" step="1" />
               </FormControl>
             )}
           />
@@ -269,8 +269,9 @@ export const IdentityAwsAuthForm = ({
                 label="Access Token Max TTL (seconds)"
                 isError={Boolean(error)}
                 errorText={error?.message}
+                helperText={`Max: ${Math.floor(maxAccessTokenTTL / SECONDS_PER_DAY)} days`}
               >
-                <Input {...field} placeholder="2592000" type="number" min="0" step="1" />
+                <Input {...field} placeholder="2592000" type="number" min="1" step="1" />
               </FormControl>
             )}
           />
@@ -283,8 +284,9 @@ export const IdentityAwsAuthForm = ({
                 label="Access Token Max Number of Uses"
                 isError={Boolean(error)}
                 errorText={error?.message}
+                tooltipText="The maximum number of times that an access token can be used; Leave blank for unlimited uses."
               >
-                <Input {...field} placeholder="0" type="number" min="0" step="1" />
+                <Input {...field} placeholder="Unlimited uses" type="number" min="0" step="1" />
               </FormControl>
             )}
           />

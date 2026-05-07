@@ -18,7 +18,6 @@ import { TLicenseServiceFactory } from "@app/ee/services/license/license-service
 import { TProjectEventsService } from "@app/ee/services/project-events/project-events-service";
 import { ProjectEvents, TProjectEventPayload } from "@app/ee/services/project-events/project-events-types";
 import { TSecretApprovalRequestDALFactory } from "@app/ee/services/secret-approval-request/secret-approval-request-dal";
-import { TSecretRotationDALFactory } from "@app/ee/services/secret-rotation/secret-rotation-dal";
 import { TSnapshotDALFactory } from "@app/ee/services/secret-snapshot/snapshot-dal";
 import { TSnapshotSecretV2DALFactory } from "@app/ee/services/secret-snapshot/snapshot-secret-v2-dal";
 import { KeyStorePrefixes, KeyStoreTtls, TKeyStoreFactory } from "@app/keystore/keystore";
@@ -27,6 +26,8 @@ import { crypto, SymmetricKeySize } from "@app/lib/crypto/cryptography";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { getTimeDifferenceInSeconds, groupBy, isSamePath, unique } from "@app/lib/fn";
 import { logger } from "@app/lib/logger";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { QueueJobs, QueueName, TQueueServiceFactory } from "@app/queue";
 import { TProjectBotDALFactory } from "@app/services/project-bot/project-bot-dal";
 import { createManySecretsRawFnFactory, updateManySecretsRawFnFactory } from "@app/services/secret/secret-fns";
@@ -38,6 +39,7 @@ import { TSecretTagDALFactory } from "@app/services/secret-tag/secret-tag-dal";
 
 import { ActorType } from "../auth/auth-type";
 import { TFolderCommitServiceFactory } from "../folder-commit/folder-commit-service";
+import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TIntegrationDALFactory } from "../integration/integration-dal";
 import { TIntegrationAuthDALFactory } from "../integration-auth/integration-auth-dal";
 import { TIntegrationAuthServiceFactory } from "../integration-auth/integration-auth-service";
@@ -63,6 +65,7 @@ import { expandSecretReferencesFactory, getAllSecretReferences } from "../secret
 import { TSecretV2BridgeDALFactory } from "../secret-v2-bridge/secret-v2-bridge-dal";
 import { TSecretVersionV2DALFactory } from "../secret-v2-bridge/secret-version-dal";
 import { TSecretVersionV2TagDALFactory } from "../secret-v2-bridge/secret-version-tag-dal";
+import { TServiceTokenDALFactory } from "../service-token/service-token-dal";
 import { SmtpTemplates, TSmtpService } from "../smtp/smtp-service";
 import { TTelemetryServiceFactory } from "../telemetry/telemetry-service";
 import { PostHogEventTypes } from "../telemetry/telemetry-types";
@@ -103,13 +106,14 @@ type TSecretQueueFactoryDep = {
   secretVersionDAL: TSecretVersionDALFactory;
   secretBlindIndexDAL: TSecretBlindIndexDALFactory;
   secretTagDAL: TSecretTagDALFactory;
+  identityDAL: Pick<TIdentityDALFactory, "findById">;
   userDAL: Pick<TUserDALFactory, "findById">;
+  serviceTokenDAL: Pick<TServiceTokenDALFactory, "findById">;
   secretVersionTagDAL: TSecretVersionTagDALFactory;
   kmsService: TKmsServiceFactory;
   secretV2BridgeDAL: TSecretV2BridgeDALFactory;
   secretVersionV2BridgeDAL: Pick<TSecretVersionV2DALFactory, "batchInsert" | "insertMany" | "findLatestVersionMany">;
   secretVersionTagV2BridgeDAL: Pick<TSecretVersionV2TagDALFactory, "insertMany" | "batchInsert">;
-  secretRotationDAL: Pick<TSecretRotationDALFactory, "secretOutputV2InsertMany" | "find">;
   secretApprovalRequestDAL: Pick<TSecretApprovalRequestDALFactory, "deleteByProjectId">;
   snapshotDAL: Pick<TSnapshotDALFactory, "findNSecretV1SnapshotByFolderId" | "deleteSnapshotsAboveLimit">;
   snapshotSecretV2BridgeDAL: Pick<TSnapshotSecretV2DALFactory, "insertMany" | "batchInsert">;
@@ -157,7 +161,9 @@ export const secretQueueFactory = ({
   secretDAL,
   secretImportDAL,
   folderDAL,
+  identityDAL,
   userDAL,
+  serviceTokenDAL,
   webhookDAL,
   projectEnvDAL,
   smtpService,
@@ -172,8 +178,8 @@ export const secretQueueFactory = ({
   secretVersionV2BridgeDAL,
   kmsService,
   secretVersionTagV2BridgeDAL,
-  secretRotationDAL,
   snapshotDAL,
+
   snapshotSecretV2BridgeDAL,
   secretApprovalRequestDAL,
   keyStore,
@@ -224,6 +230,35 @@ export const secretQueueFactory = ({
       type: ActorType.PLATFORM,
       metadata: {}
     };
+  };
+
+  const resolveChangedByDisplayName = async (changedBy: string, changedByActorType: ActorType) => {
+    try {
+      switch (changedByActorType) {
+        case ActorType.USER: {
+          const user = await userDAL.findById(changedBy);
+          return user?.email || user?.username || changedBy;
+        }
+        case ActorType.IDENTITY: {
+          const identity = await requestMemoize(requestMemoKeys.identityFindById(changedBy), () =>
+            identityDAL.findById(changedBy)
+          );
+          return identity?.name || changedBy;
+        }
+        case ActorType.SERVICE: {
+          const token = await serviceTokenDAL.findById(changedBy);
+          return token?.name || "Service Token";
+        }
+        default:
+          return `Unknown Actor [${String(changedByActorType)}]`;
+      }
+    } catch (error) {
+      logger.error(
+        error,
+        `Failed to resolve changed by display name for [changedBy=${changedBy}] [changedByActorType=${changedByActorType}]`
+      );
+      return `Failed to resolve display name`;
+    }
   };
 
   const $getJobKey = (projectId: string, environmentSlug: string, secretPath: string) => {
@@ -644,7 +679,9 @@ export const secretQueueFactory = ({
         payload: {
           environment,
           projectId,
-          secretPath
+          secretPath,
+          changedBy: actorId,
+          changedByActorType: actor
         }
       },
       {
@@ -999,9 +1036,18 @@ export const secretQueueFactory = ({
               isSynced: response?.isSynced ?? true
             });
 
+            // Resolve the actor to a canonical telemetry distinct ID consistent with getTelemetryDistinctId
+            let telemetryDistinctId = `platform/${projectId}`;
+            if (isManual && actorId) {
+              const actor = await userDAL.findById(actorId);
+              if (actor) {
+                telemetryDistinctId = actor.username;
+              }
+            }
+
             await telemetryService.sendPostHogEvents({
               event: PostHogEventTypes.IntegrationSynced,
-              distinctId: `project/${projectId}`,
+              distinctId: telemetryDistinctId,
               organizationId: project.orgId,
               properties: {
                 integrationId: integration.id,
@@ -1513,17 +1559,6 @@ export const secretQueueFactory = ({
         "id",
         tx
       );
-      /*
-       * Secret Rotation Secret Migration
-       * Saving the new encrypted colum
-       * */
-      const projectV1SecretRotations = await secretRotationDAL.find({ projectId }, tx);
-      await secretRotationDAL.secretOutputV2InsertMany(
-        projectV1SecretRotations.flatMap((el) =>
-          el.outputs.map((output) => ({ rotationId: el.id, key: output.key, secretId: output.secret.id }))
-        ),
-        tx
-      );
 
       /*
        * approvals: we will delete all approvals this is because some secret versions may not be added yet
@@ -1553,6 +1588,19 @@ export const secretQueueFactory = ({
       projectId: job.data.payload.projectId
     });
 
+    // Resolve changedBy from UUID to human-readable display name
+    let webhookEvent = job.data;
+    if (job.data.type === WebhookEvents.SecretModified) {
+      const { changedBy, changedByActorType } = job.data.payload;
+      if (changedBy && changedByActorType) {
+        const resolvedName = await resolveChangedByDisplayName(changedBy, changedByActorType as ActorType);
+        webhookEvent = {
+          ...job.data,
+          payload: { ...job.data.payload, changedBy: resolvedName }
+        };
+      }
+    }
+
     await fnTriggerWebhook({
       projectId: job.data.payload.projectId,
       environment: job.data.payload.environment,
@@ -1560,7 +1608,7 @@ export const secretQueueFactory = ({
       projectEnvDAL,
       projectDAL,
       webhookDAL,
-      event: job.data,
+      event: webhookEvent,
       auditLogService,
       secretManagerDecryptor: (value) => secretManagerDecryptor({ cipherTextBlob: value }).toString()
     });

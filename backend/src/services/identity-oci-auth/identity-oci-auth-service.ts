@@ -15,7 +15,6 @@ import { TPermissionServiceFactory } from "@app/ee/services/permission/permissio
 import { ProjectPermissionIdentityActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
 import { getConfig } from "@app/lib/config/env";
 import { request } from "@app/lib/config/request";
-import { crypto } from "@app/lib/crypto";
 import {
   BadRequestError,
   ForbiddenRequestError,
@@ -23,14 +22,17 @@ import {
   PermissionBoundaryError,
   UnauthorizedError
 } from "@app/lib/errors";
-import { extractIPDetails, isValidIpOrCidr } from "@app/lib/ip";
+import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
 import { logger } from "@app/lib/logger";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { AuthAttemptAuthMethod, AuthAttemptAuthResult, authAttemptCounter } from "@app/lib/telemetry/metrics";
 
-import { ActorType, AuthTokenType } from "../auth/auth-type";
+import { ActorType } from "../auth/auth-type";
 import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TIdentityAccessTokenDALFactory } from "../identity-access-token/identity-access-token-dal";
-import { TIdentityAccessTokenJwtPayload } from "../identity-access-token/identity-access-token-types";
+import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/identity-access-token-service";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
 import { TOrgDALFactory } from "../org/org-dal";
 import { validateIdentityUpdateForSuperAdminPrivileges } from "../super-admin/super-admin-fns";
@@ -46,12 +48,16 @@ import {
 
 type TIdentityOciAuthServiceFactoryDep = {
   identityDAL: Pick<TIdentityDALFactory, "findById">;
-  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "create" | "delete">;
+  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "delete">;
   identityOciAuthDAL: Pick<TIdentityOciAuthDALFactory, "findOne" | "transaction" | "create" | "updateById" | "delete">;
   membershipIdentityDAL: Pick<TMembershipIdentityDALFactory, "findOne" | "update" | "getIdentityById">;
   licenseService: Pick<TLicenseServiceFactory, "getPlan">;
   permissionService: Pick<TPermissionServiceFactory, "getOrgPermission" | "getProjectPermission">;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findOne" | "findEffectiveOrgMembership">;
+  identityAccessTokenService: Pick<
+    TIdentityAccessTokenServiceFactory,
+    "issueIdentityAccessToken" | "revokeAllTokensForIdentity"
+  >;
 };
 
 export type TIdentityOciAuthServiceFactory = ReturnType<typeof identityOciAuthServiceFactory>;
@@ -63,7 +69,8 @@ export const identityOciAuthServiceFactory = ({
   membershipIdentityDAL,
   licenseService,
   permissionService,
-  orgDAL
+  orgDAL,
+  identityAccessTokenService
 }: TIdentityOciAuthServiceFactoryDep) => {
   const login = async ({ identityId, headers, userOcid, organizationSlug }: TLoginOciAuthDTO) => {
     const appCfg = getConfig();
@@ -72,10 +79,17 @@ export const identityOciAuthServiceFactory = ({
       throw new NotFoundError({ message: "OCI auth method not found for identity, did you configure OCI auth?" });
     }
 
-    const identity = await identityDAL.findById(identityOciAuth.identityId);
-    if (!identity) throw new UnauthorizedError({ message: "Identity not found" });
+    const identity = await requestMemoize(requestMemoKeys.identityFindById(identityOciAuth.identityId), () =>
+      identityDAL.findById(identityOciAuth.identityId)
+    );
+    if (!identity)
+      throw new UnauthorizedError({
+        message: "Identity not found"
+      });
 
-    const org = await orgDAL.findById(identity.orgId);
+    const org = await requestMemoize(requestMemoKeys.orgFindById(identity.orgId), () =>
+      orgDAL.findById(identity.orgId)
+    );
     const isSubOrgIdentity = Boolean(org.rootOrgId);
 
     // If the identity is a sub-org identity, then the scope is always the org.id, and if it's a root org identity, then we need to resolve the scope if a organizationSlug is specified
@@ -100,7 +114,13 @@ export const identityOciAuthServiceFactory = ({
 
       if (data.compartmentId !== identityOciAuth.tenancyOcid) {
         throw new UnauthorizedError({
-          message: "Access denied: OCI account isn't part of tenancy."
+          message: "Access denied: OCI account isn't part of tenancy.",
+          detail: {
+            reasonCode: "tenancy_not_allowed",
+            identityId: identity.id,
+            orgId: identity.orgId,
+            identityName: identity.name
+          }
         });
       }
 
@@ -109,11 +129,17 @@ export const identityOciAuthServiceFactory = ({
 
         if (!isAccountAllowed)
           throw new UnauthorizedError({
-            message: "Access denied: OCI account username not allowed."
+            message: "Access denied: OCI account username not allowed.",
+            detail: {
+              reasonCode: "username_not_allowed",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
       }
 
-      if (organizationSlug) {
+      if (organizationSlug && org.slug !== organizationSlug) {
         if (!isSubOrgIdentity) {
           const subOrg = await orgDAL.findOne({ rootOrgId: org.id, slug: organizationSlug });
 
@@ -129,7 +155,13 @@ export const identityOciAuthServiceFactory = ({
 
           if (!subOrgMembership) {
             throw new UnauthorizedError({
-              message: `Identity not authorized to access sub organization ${organizationSlug}`
+              message: `Identity not authorized to access sub organization ${organizationSlug}`,
+              detail: {
+                reasonCode: "sub_org_unauthorized",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
 
@@ -138,7 +170,7 @@ export const identityOciAuthServiceFactory = ({
       }
 
       // Generate the token
-      const identityAccessToken = await identityOciAuthDAL.transaction(async (tx) => {
+      await identityOciAuthDAL.transaction(async (tx) => {
         await membershipIdentityDAL.update(
           identity.projectId
             ? {
@@ -158,35 +190,28 @@ export const identityOciAuthServiceFactory = ({
           },
           tx
         );
-        const newToken = await identityAccessTokenDAL.create(
-          {
-            identityId: identityOciAuth.identityId,
-            isAccessTokenRevoked: false,
-            accessTokenTTL: identityOciAuth.accessTokenTTL,
-            accessTokenMaxTTL: identityOciAuth.accessTokenMaxTTL,
-            accessTokenNumUses: 0,
-            accessTokenNumUsesLimit: identityOciAuth.accessTokenNumUsesLimit,
-            authMethod: IdentityAuthMethod.OCI_AUTH,
-            subOrganizationId
-          },
-          tx
-        );
-        return newToken;
       });
 
-      const accessToken = crypto.jwt().sign(
-        {
-          identityId: identityOciAuth.identityId,
-          identityAccessTokenId: identityAccessToken.id,
-          authTokenType: AuthTokenType.IDENTITY_ACCESS_TOKEN
-        } as TIdentityAccessTokenJwtPayload,
-        appCfg.AUTH_SECRET,
-        Number(identityAccessToken.accessTokenTTL) === 0
-          ? undefined
-          : {
-              expiresIn: Number(identityAccessToken.accessTokenTTL)
-            }
-      );
+      const subOrgDetails =
+        subOrganizationId && subOrganizationId !== org.id ? await orgDAL.findById(subOrganizationId) : null;
+      const tokenScopeOrg = subOrgDetails ?? org;
+      const tokenRootOrgId = tokenScopeOrg.rootOrgId ?? tokenScopeOrg.id;
+      const tokenParentOrgId = tokenScopeOrg.parentOrgId ?? tokenRootOrgId;
+
+      const { accessToken, identityAccessToken } = await identityAccessTokenService.issueIdentityAccessToken({
+        identityId: identityOciAuth.identityId,
+        identityName: identity.name,
+        authMethod: IdentityAuthMethod.OCI_AUTH,
+        orgId: tokenScopeOrg.id,
+        rootOrgId: tokenRootOrgId,
+        parentOrgId: tokenParentOrgId,
+        subOrganizationId,
+        accessTokenTTL: Number(identityOciAuth.accessTokenTTL),
+        accessTokenMaxTTL: Number(identityOciAuth.accessTokenMaxTTL),
+        accessTokenNumUsesLimit: Number(identityOciAuth.accessTokenNumUsesLimit),
+        accessTokenPeriod: Number(identityOciAuth.accessTokenPeriod) || 0,
+        accessTokenTrustedIps: identityOciAuth.accessTokenTrustedIps as TIp[]
+      });
 
       if (appCfg.OTEL_TELEMETRY_COLLECTION_ENABLED) {
         authAttemptCounter.add(1, {
@@ -196,8 +221,8 @@ export const identityOciAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.OCI_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.SUCCESS,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
 
@@ -216,8 +241,8 @@ export const identityOciAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.OCI_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.FAILURE,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
       throw error;
@@ -533,7 +558,9 @@ export const identityOciAuthServiceFactory = ({
         scope: OrganizationActionScope.Any
       });
 
-      const { shouldUseNewPrivilegeSystem } = await orgDAL.findById(actorOrgId);
+      const { shouldUseNewPrivilegeSystem } = await requestMemoize(requestMemoKeys.orgFindById(actorOrgId), () =>
+        orgDAL.findById(actorOrgId)
+      );
       const permissionBoundary = validatePrivilegeChangeOperation(
         shouldUseNewPrivilegeSystem,
         OrgPermissionIdentityActions.RevokeAuth,
@@ -560,6 +587,12 @@ export const identityOciAuthServiceFactory = ({
 
       return { ...deletedOciAuth?.[0], orgId: identityMembershipOrg.scopeOrgId };
     });
+
+    // Detaching the auth method must invalidate any tokens already issued
+    // through it; without this, leaked tokens authenticate up to MAX_AGE
+    // even after the admin pulled the auth method.
+    await identityAccessTokenService.revokeAllTokensForIdentity(identityId);
+
     return revokedIdentityOciAuth;
   };
 

@@ -402,6 +402,14 @@ export const AppConnectionsBrowser = () => {
       category: "Hosting",
     },
     {
+      name: "Ona",
+      slug: "ona",
+      path: "/integrations/app-connections/ona",
+      description:
+        "Learn how to connect your Ona (Gitpod) workspaces to pull secrets from Infisical.",
+      category: "Hosting",
+    },
+    {
       name: "MongoDB",
       slug: "mongodb",
       path: "/integrations/app-connections/mongodb",
@@ -421,7 +429,55 @@ export const AppConnectionsBrowser = () => {
       path: "/integrations/app-connections/smb",
       description: "Learn how to connect to Windows servers via SMB.",
       category: "Networking & DNS",
-    }
+    },
+    {
+      name: "Azure Entra ID",
+      slug: "azure-entra-id",
+      path: "/integrations/app-connections/azure-entra-id",
+      description:
+        "Learn how to connect your Azure Entra ID to manage SCIM tokens with Infisical.",
+      category: "Identity & Auth",
+    },
+    {
+      name: "Infisical",
+      slug: "external-infisical",
+      path: "/integrations/app-connections/external-infisical",
+      description:
+        "Learn how to connect a remote Infisical instance to sync secrets between Infisical projects.",
+      category: "Security",
+    },
+    {
+      name: "Doppler",
+      slug: "doppler",
+      path: "/integrations/app-connections/doppler",
+      description:
+        "Learn how to connect Doppler for migrating data from Doppler to Infisical.",
+      category: "DevOps Tools",
+    }, 
+    {
+      name: "OVH",
+      slug: "ovh",
+      path: "/integrations/app-connections/ovh",
+      description:
+        "Learn how to connect OVH Cloud to pull secrets from OVH Secret Manager to Infisical.",
+      category: "Cloud Providers",
+    },
+    {
+      name: "Travis CI",
+      slug: "travis-ci",
+      path: "/integrations/app-connections/travis-ci",
+      description:
+        "Learn how to connect Travis CI to pull secrets from Infisical.",
+      category: "CI/CD",
+    },
+    {
+      name: "Snowflake",
+      slug: "snowflake",
+      path: "/integrations/app-connections/snowflake",
+      description:
+        "Learn how to connect Snowflake to pull secrets from Infisical.",
+      category: "Databases",
+    },
   ].sort(function (a, b) {
     return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
   });

@@ -20,9 +20,15 @@ import { GITHUB_SYNC_LIST_OPTION, GithubSyncFns } from "@app/services/secret-syn
 import { SecretSync, SecretSyncPlanType } from "@app/services/secret-sync/secret-sync-enums";
 import { SecretSyncError } from "@app/services/secret-sync/secret-sync-errors";
 import {
+  TPreSaveTransformDeps,
+  TPreSaveTransformDestinationConfigFn,
+  TPreSaveTransformDestinationConfigParams,
+  TPreSaveTransformSyncOptionsFn,
+  TPreSaveTransformSyncOptionsParams,
   TSecretMap,
   TSecretSyncListItem,
-  TSecretSyncWithCredentials
+  TSecretSyncWithCredentials,
+  TSyncSecretsResult
 } from "@app/services/secret-sync/secret-sync-types";
 
 import { TAppConnectionDALFactory } from "../app-connection/app-connection-dal";
@@ -31,6 +37,12 @@ import { ONEPASS_SYNC_LIST_OPTION, OnePassSyncFns } from "./1password";
 import { AwsSecretsManagerSyncMappingBehavior } from "./aws-secrets-manager/aws-secrets-manager-sync-enums";
 import { AZURE_APP_CONFIGURATION_SYNC_LIST_OPTION, azureAppConfigurationSyncFactory } from "./azure-app-configuration";
 import { AZURE_DEVOPS_SYNC_LIST_OPTION, azureDevOpsSyncFactory } from "./azure-devops";
+import {
+  AZURE_ENTRA_ID_SCIM_SYNC_LIST_OPTION,
+  azureEntraIdScimPreSaveTransformDestinationConfig,
+  azureEntraIdScimPreSaveTransformSyncOptions,
+  AzureEntraIdScimSyncFns
+} from "./azure-entra-id-scim";
 import { AZURE_KEY_VAULT_SYNC_LIST_OPTION, azureKeyVaultSyncFactory } from "./azure-key-vault";
 import { BITBUCKET_SYNC_LIST_OPTION, BitbucketSyncFns } from "./bitbucket";
 import { CAMUNDA_SYNC_LIST_OPTION, camundaSyncFactory } from "./camunda";
@@ -40,10 +52,12 @@ import { CIRCLECI_SYNC_LIST_OPTION, CircleCISyncFns } from "./circleci";
 import { CLOUDFLARE_PAGES_SYNC_LIST_OPTION } from "./cloudflare-pages/cloudflare-pages-constants";
 import { CloudflarePagesSyncFns } from "./cloudflare-pages/cloudflare-pages-fns";
 import { CLOUDFLARE_WORKERS_SYNC_LIST_OPTION, CloudflareWorkersSyncFns } from "./cloudflare-workers";
+import { DEVIN_SYNC_LIST_OPTION, DevinSyncFns } from "./devin";
 import {
   DIGITAL_OCEAN_APP_PLATFORM_SYNC_LIST_OPTION,
   DigitalOceanAppPlatformSyncFns
 } from "./digital-ocean-app-platform";
+import { EXTERNAL_INFISICAL_SYNC_LIST_OPTION, ExternalInfisicalSyncFns } from "./external-infisical";
 import { FLYIO_SYNC_LIST_OPTION, FlyioSyncFns } from "./flyio";
 import { GCP_SYNC_LIST_OPTION } from "./gcp";
 import { GcpSyncFns } from "./gcp/gcp-sync-fns";
@@ -56,13 +70,17 @@ import { LARAVEL_FORGE_SYNC_LIST_OPTION, LaravelForgeSyncFns } from "./laravel-f
 import { NETLIFY_SYNC_LIST_OPTION, NetlifySyncFns } from "./netlify";
 import { NORTHFLANK_SYNC_LIST_OPTION, NorthflankSyncFns } from "./northflank";
 import { OCTOPUS_DEPLOY_SYNC_LIST_OPTION, OctopusDeploySyncFns } from "./octopus-deploy";
+import { ONA_SYNC_LIST_OPTION, OnaSyncFns } from "./ona";
+import { OVH_SYNC_LIST_OPTION, OvhSyncFns } from "./ovh";
 import { RAILWAY_SYNC_LIST_OPTION } from "./railway/railway-sync-constants";
 import { RailwaySyncFns } from "./railway/railway-sync-fns";
 import { RENDER_SYNC_LIST_OPTION, RenderSyncFns } from "./render";
 import { SECRET_SYNC_PLAN_MAP } from "./secret-sync-maps";
+import { SNOWFLAKE_SYNC_LIST_OPTION, SnowflakeSyncFns } from "./snowflake";
 import { SUPABASE_SYNC_LIST_OPTION, SupabaseSyncFns } from "./supabase";
 import { TEAMCITY_SYNC_LIST_OPTION, TeamCitySyncFns } from "./teamcity";
 import { TERRAFORM_CLOUD_SYNC_LIST_OPTION, TerraformCloudSyncFns } from "./terraform-cloud";
+import { TRAVIS_CI_SYNC_LIST_OPTION, TravisCISyncFns } from "./travis-ci";
 import { VERCEL_SYNC_LIST_OPTION, VercelSyncFns } from "./vercel";
 import { WINDMILL_SYNC_LIST_OPTION, WindmillSyncFns } from "./windmill";
 import { ZABBIX_SYNC_LIST_OPTION, ZabbixSyncFns } from "./zabbix";
@@ -102,11 +120,46 @@ const SECRET_SYNC_LIST_OPTIONS: Record<SecretSync, TSecretSyncListItem> = {
   [SecretSync.LaravelForge]: LARAVEL_FORGE_SYNC_LIST_OPTION,
   [SecretSync.Chef]: CHEF_SYNC_LIST_OPTION,
   [SecretSync.OctopusDeploy]: OCTOPUS_DEPLOY_SYNC_LIST_OPTION,
-  [SecretSync.CircleCI]: CIRCLECI_SYNC_LIST_OPTION
+  [SecretSync.CircleCI]: CIRCLECI_SYNC_LIST_OPTION,
+  [SecretSync.AzureEntraIdScim]: AZURE_ENTRA_ID_SCIM_SYNC_LIST_OPTION,
+  [SecretSync.ExternalInfisical]: EXTERNAL_INFISICAL_SYNC_LIST_OPTION,
+  [SecretSync.OVH]: OVH_SYNC_LIST_OPTION,
+  [SecretSync.Devin]: DEVIN_SYNC_LIST_OPTION,
+  [SecretSync.Ona]: ONA_SYNC_LIST_OPTION,
+  [SecretSync.TravisCI]: TRAVIS_CI_SYNC_LIST_OPTION,
+  [SecretSync.Snowflake]: SNOWFLAKE_SYNC_LIST_OPTION
 };
 
 export const listSecretSyncOptions = () => {
   return Object.values(SECRET_SYNC_LIST_OPTIONS).sort((a, b) => a.name.localeCompare(b.name));
+};
+
+const PRE_SAVE_TRANSFORM_SYNC_OPTIONS_MAP: Partial<Record<SecretSync, TPreSaveTransformSyncOptionsFn>> = {
+  [SecretSync.AzureEntraIdScim]: azureEntraIdScimPreSaveTransformSyncOptions
+};
+
+const PRE_SAVE_TRANSFORM_DESTINATION_CONFIG_MAP: Partial<Record<SecretSync, TPreSaveTransformDestinationConfigFn>> = {
+  [SecretSync.AzureEntraIdScim]: azureEntraIdScimPreSaveTransformDestinationConfig
+};
+
+export const preSaveTransformSyncOptions = async (
+  destination: SecretSync,
+  params: TPreSaveTransformSyncOptionsParams,
+  deps: TPreSaveTransformDeps
+) => {
+  const transform = PRE_SAVE_TRANSFORM_SYNC_OPTIONS_MAP[destination];
+  if (!transform) return params.syncOptions;
+  return transform(params, deps);
+};
+
+export const preSaveTransformDestinationConfig = async (
+  destination: SecretSync,
+  params: TPreSaveTransformDestinationConfigParams,
+  deps: TPreSaveTransformDeps
+) => {
+  const transform = PRE_SAVE_TRANSFORM_DESTINATION_CONFIG_MAP[destination];
+  if (!transform) return params.destinationConfig;
+  return transform(params, deps);
 };
 
 type TSyncSecretDeps = {
@@ -240,7 +293,7 @@ export const SecretSyncFns = {
     secretSync: TSecretSyncWithCredentials,
     secretMap: TSecretMap,
     { kmsService, appConnectionDAL, gatewayService, gatewayV2Service }: TSyncSecretDeps
-  ): Promise<void> => {
+  ): Promise<TSyncSecretsResult | void> => {
     const schemaSecretMap = addSchema(secretMap, secretSync.environment?.slug || "", secretSync.syncOptions.keySchema);
 
     switch (secretSync.destination) {
@@ -329,6 +382,22 @@ export const SecretSyncFns = {
         return OctopusDeploySyncFns.syncSecrets(secretSync, schemaSecretMap);
       case SecretSync.CircleCI:
         return CircleCISyncFns.syncSecrets(secretSync, schemaSecretMap);
+      case SecretSync.AzureEntraIdScim:
+        return AzureEntraIdScimSyncFns.syncSecrets(secretSync, schemaSecretMap, { appConnectionDAL, kmsService });
+      case SecretSync.ExternalInfisical:
+        // Key schema is intentionally not applied for Infisical-to-Infisical syncs to prevent
+        // infinite sync loops where the prefixed key triggers another sync cycle.
+        return ExternalInfisicalSyncFns.syncSecrets(secretSync, secretMap);
+      case SecretSync.OVH:
+        return OvhSyncFns.syncSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Devin:
+        return DevinSyncFns.syncSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Ona:
+        return OnaSyncFns.syncSecrets(secretSync, schemaSecretMap);
+      case SecretSync.TravisCI:
+        return TravisCISyncFns.syncSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Snowflake:
+        return SnowflakeSyncFns.syncSecrets(secretSync, schemaSecretMap);
       default:
         throw new Error(
           `Unhandled sync destination for sync secrets fns: ${(secretSync as TSecretSyncWithCredentials).destination}`
@@ -463,6 +532,27 @@ export const SecretSyncFns = {
       case SecretSync.CircleCI:
         secretMap = await CircleCISyncFns.getSecrets(secretSync);
         break;
+      case SecretSync.AzureEntraIdScim:
+        secretMap = await AzureEntraIdScimSyncFns.getSecrets();
+        break;
+      case SecretSync.ExternalInfisical:
+        secretMap = await ExternalInfisicalSyncFns.getSecrets(secretSync);
+        break;
+      case SecretSync.OVH:
+        secretMap = await OvhSyncFns.getSecrets(secretSync);
+        break;
+      case SecretSync.Devin:
+        secretMap = await DevinSyncFns.getSecrets(secretSync);
+        break;
+      case SecretSync.Ona:
+        secretMap = await OnaSyncFns.getSecrets();
+        break;
+      case SecretSync.TravisCI:
+        secretMap = await TravisCISyncFns.getSecrets(secretSync);
+        break;
+      case SecretSync.Snowflake:
+        secretMap = await SnowflakeSyncFns.getSecrets(secretSync);
+        break;
       default:
         throw new Error(
           `Unhandled sync destination for get secrets fns: ${(secretSync as TSecretSyncWithCredentials).destination}`
@@ -566,6 +656,22 @@ export const SecretSyncFns = {
         return OctopusDeploySyncFns.removeSecrets(secretSync, schemaSecretMap);
       case SecretSync.CircleCI:
         return CircleCISyncFns.removeSecrets(secretSync, schemaSecretMap);
+      case SecretSync.AzureEntraIdScim:
+        return AzureEntraIdScimSyncFns.removeSecrets();
+      case SecretSync.ExternalInfisical:
+        // Key schema is intentionally not applied for Infisical-to-Infisical syncs to prevent
+        // infinite sync loops where the prefixed key triggers another sync cycle.
+        return ExternalInfisicalSyncFns.removeSecrets(secretSync, secretMap);
+      case SecretSync.OVH:
+        return OvhSyncFns.removeSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Devin:
+        return DevinSyncFns.removeSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Ona:
+        return OnaSyncFns.removeSecrets(secretSync, schemaSecretMap);
+      case SecretSync.TravisCI:
+        return TravisCISyncFns.removeSecrets(secretSync, schemaSecretMap);
+      case SecretSync.Snowflake:
+        return SnowflakeSyncFns.removeSecrets(secretSync, schemaSecretMap);
       default:
         throw new Error(
           `Unhandled sync destination for remove secrets fns: ${(secretSync as TSecretSyncWithCredentials).destination}`
@@ -580,10 +686,14 @@ export const parseSyncErrorMessage = (err: unknown): string => {
   let errorMessage: string;
 
   if (err instanceof SecretSyncError) {
+    const innerError: Record<string, unknown> | string | undefined =
+      err.error instanceof AxiosError
+        ? (err.error.response?.data as Record<string, unknown>)
+        : (err.error as Error)?.message;
     errorMessage = JSON.stringify({
       secretKey: err.secretKey,
       message: err.message || undefined,
-      error: err.error ? parseSyncErrorMessage(err.error) : undefined
+      error: innerError
     });
   } else if (err instanceof AxiosError) {
     errorMessage = err?.response?.data

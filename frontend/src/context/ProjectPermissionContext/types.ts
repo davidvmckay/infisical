@@ -90,6 +90,14 @@ export enum ProjectPermissionPkiCertificateInstallationActions {
   Delete = "delete"
 }
 
+export enum ProjectPermissionCodeSigningActions {
+  Read = "read",
+  Create = "create",
+  Edit = "edit",
+  Delete = "delete",
+  Sign = "sign"
+}
+
 export enum ProjectPermissionIdentityActions {
   Read = "read",
   Create = "create",
@@ -219,12 +227,17 @@ export enum ProjectPermissionAuditLogsActions {
   Read = "read"
 }
 
+export enum ProjectPermissionInsightsActions {
+  Read = "read"
+}
+
 export enum ProjectPermissionAppConnectionActions {
   Read = "read-app-connections",
   Create = "create-app-connections",
   Edit = "edit-app-connections",
   Delete = "delete-app-connections",
-  Connect = "connect-app-connections"
+  Connect = "connect-app-connections",
+  RotateCredentials = "rotate-credentials"
 }
 
 export enum PermissionConditionOperators {
@@ -247,12 +260,25 @@ export enum ProjectPermissionPamAccountActions {
   Read = "read",
   Create = "create",
   Edit = "edit",
-  Delete = "delete"
+  Delete = "delete",
+  TriggerRotation = "trigger-rotation",
+  ReadCredentials = "read-credentials"
 }
 
 export enum ProjectPermissionPamSessionActions {
+  Read = "read",
+  Terminate = "terminate"
+}
+
+export enum ProjectPermissionPamAccountPolicyActions {
+  Read = "read",
+  Create = "create",
+  Edit = "edit",
+  Delete = "delete"
+}
+
+export enum ProjectPermissionPamInsightsActions {
   Read = "read"
-  // Terminate = "terminate"
 }
 
 export enum ProjectPermissionPamDiscoveryActions {
@@ -271,6 +297,15 @@ export enum ProjectPermissionMcpEndpointActions {
   Connect = "connect"
 }
 
+export enum ProjectPermissionHoneyTokenActions {
+  Read = "read",
+  ReadCredentials = "read-credentials",
+  Create = "create",
+  Edit = "edit",
+  Reset = "reset",
+  Revoke = "revoke"
+}
+
 export enum ProjectPermissionApprovalRequestActions {
   Read = "read",
   Create = "create"
@@ -284,6 +319,13 @@ export enum ProjectPermissionApprovalRequestGrantActions {
 export enum ProjectPermissionSecretApprovalRequestActions {
   Read = "read"
 }
+
+export type MemberManagementSubjectFields = {
+  userEmail?: string;
+  assignableRole?: string;
+  assignableSubject?: string;
+  assignableAction?: string;
+};
 
 export type IdentityManagementSubjectFields = {
   identityId?: string;
@@ -389,6 +431,7 @@ export enum ProjectPermissionSub {
   SshHostGroups = "ssh-host-groups",
   PkiAlerts = "pki-alerts",
   PkiCollections = "pki-collections",
+  CertificateInventoryViews = "certificate-inventory-views",
   PkiSubscribers = "pki-subscribers",
   CertificateProfiles = "certificate-profiles",
   CertificatePolicies = "certificate-policies",
@@ -398,6 +441,7 @@ export enum ProjectPermissionSub {
   PkiSyncs = "pki-syncs",
   PkiDiscovery = "pki-discovery",
   PkiCertificateInstallations = "pki-certificate-installations",
+  CodeSigners = "code-signers",
   Kmip = "kmip",
   Commits = "commits",
   SecretScanningDataSources = "secret-scanning-data-sources",
@@ -407,14 +451,19 @@ export enum ProjectPermissionSub {
   AppConnections = "app-connections",
   PamFolders = "pam-folders",
   PamResources = "pam-resources",
+  PamDomains = "pam-domains",
   PamAccounts = "pam-accounts",
   PamSessions = "pam-sessions",
+  PamAccountPolicies = "pam-account-policies",
   PamDiscovery = "pam-discovery",
+  PamInsights = "pam-insights",
   McpEndpoints = "mcp-endpoints",
   McpServers = "mcp-servers",
   McpActivityLogs = "mcp-activity-logs",
+  HoneyTokens = "honey-tokens",
   ApprovalRequests = "approval-requests",
-  ApprovalRequestGrants = "approval-request-grants"
+  ApprovalRequestGrants = "approval-request-grants",
+  Insights = "insights"
 }
 
 export type SecretSubjectFields = {
@@ -465,8 +514,9 @@ export type CertificateAuthoritySubjectFields = {
 
 export type CertificateSubjectFields = {
   commonName?: string;
-  altNames?: string;
+  altNames?: string[];
   serialNumber?: string;
+  metadata?: { key: string; value: string }[];
 };
 
 export type CertificateProfileSubjectFields = {
@@ -497,7 +547,10 @@ export type CertificatePolicySubjectFields = {
 };
 
 export type PamAccountSubjectFields = {
-  resourceName: string;
+  resourceName?: string;
+  resourceType?: string;
+  domainName?: string;
+  domainType?: string;
   accountName: string;
   metadata?: { key: string; value: string }[];
 };
@@ -563,7 +616,13 @@ export type ProjectPermissionSet =
     ]
   | [ProjectPermissionActions, ProjectPermissionSub.Role]
   | [ProjectPermissionActions, ProjectPermissionSub.Tags]
-  | [ProjectPermissionMemberActions, ProjectPermissionSub.Member]
+  | [
+      ProjectPermissionMemberActions,
+      (
+        | ProjectPermissionSub.Member
+        | (ForcedSubject<ProjectPermissionSub.Member> & MemberManagementSubjectFields)
+      )
+    ]
   | [ProjectPermissionActions, ProjectPermissionSub.Groups]
   | [ProjectPermissionActions, ProjectPermissionSub.Integrations]
   | [ProjectPermissionActions, ProjectPermissionSub.Webhooks]
@@ -637,11 +696,13 @@ export type ProjectPermissionSet =
     ]
   | [ProjectPermissionActions, ProjectPermissionSub.PkiAlerts]
   | [ProjectPermissionActions, ProjectPermissionSub.PkiCollections]
+  | [ProjectPermissionActions, ProjectPermissionSub.CertificateInventoryViews]
   | [ProjectPermissionPkiDiscoveryActions, ProjectPermissionSub.PkiDiscovery]
   | [
       ProjectPermissionPkiCertificateInstallationActions,
       ProjectPermissionSub.PkiCertificateInstallations
     ]
+  | [ProjectPermissionCodeSigningActions, ProjectPermissionSub.CodeSigners]
   | [ProjectPermissionActions.Delete, ProjectPermissionSub.Project]
   | [ProjectPermissionActions.Edit, ProjectPermissionSub.Project]
   | [ProjectPermissionActions.Read, ProjectPermissionSub.SecretRollback]
@@ -678,6 +739,7 @@ export type ProjectPermissionSet =
         | (ForcedSubject<ProjectPermissionSub.PamResources> & PamResourceSubjectFields)
       )
     ]
+  | [ProjectPermissionActions, ProjectPermissionSub.PamDomains]
   | [
       ProjectPermissionPamAccountActions,
       (
@@ -686,10 +748,14 @@ export type ProjectPermissionSet =
       )
     ]
   | [ProjectPermissionPamSessionActions, ProjectPermissionSub.PamSessions]
+  | [ProjectPermissionPamAccountPolicyActions, ProjectPermissionSub.PamAccountPolicies]
   | [ProjectPermissionPamDiscoveryActions, ProjectPermissionSub.PamDiscovery]
+  | [ProjectPermissionPamInsightsActions, ProjectPermissionSub.PamInsights]
   | [ProjectPermissionApprovalRequestActions, ProjectPermissionSub.ApprovalRequests]
   | [ProjectPermissionApprovalRequestGrantActions, ProjectPermissionSub.ApprovalRequestGrants]
   | [ProjectPermissionSecretApprovalRequestActions, ProjectPermissionSub.SecretApprovalRequest]
+  | [ProjectPermissionInsightsActions, ProjectPermissionSub.Insights]
+  | [ProjectPermissionHoneyTokenActions, ProjectPermissionSub.HoneyTokens]
   | [
       ProjectPermissionMcpEndpointActions,
       (

@@ -8,8 +8,7 @@ import {
   IncidentContactsSchema,
   OrgMembershipsSchema,
   OrgMembershipStatus,
-  OrgRolesSchema,
-  UsersSchema
+  OrgRolesSchema
 } from "@app/db/schemas";
 import { EventType, UserAgentType } from "@app/ee/services/audit-log/audit-log-types";
 import { ApiDocsTags, AUDIT_LOGS, ORGANIZATIONS } from "@app/lib/api-docs";
@@ -20,7 +19,7 @@ import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { ActorType, AuthMode, MfaMethod } from "@app/services/auth/auth-type";
 import { OrgWithSubOrgsSchema, sanitizedOrganizationSchema } from "@app/services/org/org-schema";
 
-import { integrationAuthPubSchema } from "../sanitizedSchemas";
+import { integrationAuthPubSchema, SanitizedUserSchema } from "../sanitizedSchemas";
 
 export const registerOrgRouter = async (server: FastifyZodProvider) => {
   server.route({
@@ -149,7 +148,7 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
         .object({
           projectId: z.string().optional().describe(AUDIT_LOGS.EXPORT.projectId),
           environment: z.string().optional().describe(AUDIT_LOGS.EXPORT.environment),
-          actorType: z.nativeEnum(ActorType).optional(),
+          actorType: z.nativeEnum(ActorType).optional().describe(AUDIT_LOGS.EXPORT.actorType),
           secretPath: z
             .string()
             .optional()
@@ -160,7 +159,8 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
           eventType: z
             .string()
             .optional()
-            .transform((val) => (val ? val.split(",") : undefined)),
+            .transform((val) => (val ? val.split(",") : undefined))
+            .pipe(z.nativeEnum(EventType).array().optional()),
           userAgentType: z.nativeEnum(UserAgentType).optional().describe(AUDIT_LOGS.EXPORT.userAgentType),
           eventMetadata: z
             .string()
@@ -174,9 +174,11 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
 
               return pairs.reduce(
                 (acc, pair) => {
-                  const [key, value] = pair.split("=");
-                  if (key && value) {
-                    acc[key] = value;
+                  const eqIdx = pair.indexOf("=");
+                  if (eqIdx > 0) {
+                    const key = pair.slice(0, eqIdx);
+                    const value = pair.slice(eqIdx + 1);
+                    if (value) acc[key] = value;
                   }
                   return acc;
                 },
@@ -246,7 +248,7 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
           startDate: req.query.startDate || getLastMidnightDateISO(),
           auditLogActorId: req.query.actor,
           actorType: req.query.actorType,
-          eventType: req.query.eventType as EventType[] | undefined
+          eventType: req.query.eventType
         },
         actorId: req.permission.id,
         actorOrgId: req.permission.orgId,
@@ -254,7 +256,50 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
         actor: req.permission.type
       });
 
+      if (req.query.offset === 0) {
+        await server.services.auditLog.createAuditLog({
+          ...req.auditLogInfo,
+          orgId: req.permission.orgId,
+          projectId: req.query.projectId,
+          event: {
+            type: EventType.VIEW_AUDIT_LOGS,
+            metadata: {}
+          }
+        });
+      }
+
       return { auditLogs };
+    }
+  });
+
+  server.route({
+    method: "GET",
+    url: "/audit-logs/postgres-storage-status",
+    config: {
+      rateLimit: readLimit
+    },
+    schema: {
+      operationId: "getOrganizationAuditLogPostgresStorageStatus",
+      tags: [ApiDocsTags.AuditLogs],
+      description: "Get the PostgreSQL audit log storage status for an organization",
+      response: {
+        200: z.object({
+          clickHouseConfigured: z.boolean(),
+          auditLogGenerationDisabled: z.boolean(),
+          auditLogStorageDisabled: z.boolean(),
+          auditLogRowCount: z.number()
+        })
+      }
+    },
+    onRequest: verifyAuth([AuthMode.JWT]),
+    handler: async (req) => {
+      return server.services.auditLog.getAuditLogPostgresStorageStatus({
+        actor: req.permission.type,
+        actorId: req.permission.id,
+        actorAuthMethod: req.permission.authMethod,
+        actorOrgId: req.permission.orgId,
+        orgId: req.permission.orgId
+      });
     }
   });
 
@@ -273,14 +318,13 @@ export const registerOrgRouter = async (server: FastifyZodProvider) => {
         200: z.object({
           users: OrgMembershipsSchema.merge(
             z.object({
-              user: UsersSchema.pick({
+              user: SanitizedUserSchema.pick({
                 username: true,
                 email: true,
                 firstName: true,
                 lastName: true,
-                id: true,
-                superAdmin: true
-              }).merge(z.object({ publicKey: z.string().nullable().optional() }))
+                id: true
+              }).merge(z.object({ publicKey: z.string().nullable().optional(), superAdmin: z.boolean().nullish() }))
             })
           )
             .omit({ createdAt: true, updatedAt: true })

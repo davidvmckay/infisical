@@ -286,11 +286,14 @@ export const RequestsTab = () => {
                       className="h-14 cursor-pointer transition-colors hover:bg-mineshaft-700"
                       onClick={() =>
                         navigate({
-                          to: "/organizations/$orgId/projects/cert-manager/$projectId/approval-requests/$approvalRequestId",
+                          to: "/organizations/$orgId/projects/cert-manager/$projectId/approvals/$approvalRequestId",
                           params: {
                             orgId: currentOrg.id,
                             projectId: currentProject.id,
                             approvalRequestId: request.id
+                          },
+                          search: {
+                            policyType: ApprovalPolicyType.CertRequest
                           }
                         })
                       }

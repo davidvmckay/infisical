@@ -49,5 +49,18 @@ export enum AppConnection {
   Dbt = "dbt",
   SMB = "smb",
   OpenRouter = "open-router",
-  CircleCI = "circleci"
+  CircleCI = "circleci",
+  AzureEntraId = "azure-entra-id",
+  Venafi = "venafi",
+  VenafiTpp = "venafi-tpp",
+  ExternalInfisical = "external-infisical",
+  Doppler = "doppler",
+  NetScaler = "netscaler",
+  Anthropic = "anthropic",
+  OVH = "ovh",
+  Devin = "devin",
+  Ona = "ona",
+  DigiCert = "digicert",
+  TravisCI = "travis-ci",
+  Snowflake = "snowflake"
 }

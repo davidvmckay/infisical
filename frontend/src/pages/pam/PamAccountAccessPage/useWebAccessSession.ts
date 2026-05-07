@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
+import { Readline } from "xterm-readline";
 
 import { apiRequest } from "@app/config/request";
 import { MfaSessionStatus, TMfaSessionStatusResponse } from "@app/hooks/api/mfaSession/types";
@@ -17,6 +18,7 @@ type UseWebAccessSessionOptions = {
   resourceName: string;
   accountName: string;
   resourceType: string;
+  reason?: string;
   onSessionEnd?: () => void;
 };
 
@@ -27,6 +29,7 @@ export const useWebAccessSession = ({
   resourceName,
   accountName,
   resourceType,
+  reason,
   onSessionEnd
 }: UseWebAccessSessionOptions) => {
   const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
@@ -38,8 +41,16 @@ export const useWebAccessSession = ({
   const inputBufferRef = useRef("");
   const currentPromptRef = useRef("");
   const promptCallbackRef = useRef<((input: string) => void) | null>(null);
+  const readlineRef = useRef<Readline | null>(null);
+  const readLoopActiveRef = useRef(false);
+  const nextPromptResolverRef = useRef<((prompt: string) => void) | null>(null);
+  const nextPromptRejecterRef = useRef<((reason: Error) => void) | null>(null);
 
   const onSessionEndRef = useRef(onSessionEnd);
+  // Seed with the prop so non-SSH flows (which collect reason via the upfront ReasonGate)
+  // pass it on the first connect; SSH leaves it undefined and uses the inline terminal prompt.
+  const submittedReasonRef = useRef<string | undefined>(reason);
+  const askedOptionalReasonRef = useRef(false);
 
   useEffect(() => {
     onSessionEndRef.current = onSessionEnd;
@@ -83,6 +94,43 @@ export const useWebAccessSession = ({
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
+      const waitForNextPrompt = (): Promise<string> => {
+        return new Promise<string>((resolve, reject) => {
+          nextPromptResolverRef.current = resolve;
+          nextPromptRejecterRef.current = reject;
+        });
+      };
+
+      const runReadLoop = async (rl: Readline, initialPrompt: string) => {
+        readLoopActiveRef.current = true;
+        let prompt = initialPrompt;
+
+        while (readLoopActiveRef.current) {
+          let line: string;
+          try {
+            // eslint-disable-next-line no-await-in-loop -- intentional sequential read loop
+            line = await rl.read(prompt);
+          } catch {
+            break;
+          }
+
+          if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            break;
+          }
+
+          wsRef.current.send(JSON.stringify({ type: WsMessageType.Input, data: line }));
+
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            prompt = await waitForNextPrompt();
+          } catch {
+            break;
+          }
+        }
+
+        readLoopActiveRef.current = false;
+      };
+
       ws.onmessage = (event) => {
         let raw: unknown;
         try {
@@ -110,7 +158,19 @@ export const useWebAccessSession = ({
             );
           }
 
+          if (!isSSH && readlineRef.current) {
+            const rl = readlineRef.current;
+            if (msg.data) {
+              rl.print(msg.data.replace(/\r?\n/g, "\r\n"));
+            }
+            runReadLoop(rl, msg.prompt || "=> ");
+          } else if (!isSSH) {
+            if (msg.data) terminal.write(msg.data.replace(/\r?\n/g, "\r\n"));
+            if (msg.prompt) terminal.write(msg.prompt);
+          }
+
           setTimeout(() => terminal.focus(), 100);
+          return;
         }
 
         if (msg.type === WsMessageType.SessionEnd) {
@@ -123,20 +183,32 @@ export const useWebAccessSession = ({
             adjustWidthForOutput(msg.data, terminal, fitAddonRef.current, containerEl);
           }
           if (isSSH) {
-            // Raw ANSI passthrough — no newline normalization
             terminal.write(msg.data);
-          } else {
-            terminal.write(msg.data.replace(/\r?\n/g, "\r\n"));
+          } else if (readlineRef.current) {
+            readlineRef.current.print(msg.data.replace(/\r?\n/g, "\r\n"));
           }
         }
+
         if (msg.prompt && !isSSH) {
-          currentPromptRef.current = msg.prompt;
-          terminal.write(msg.prompt);
+          if (nextPromptResolverRef.current) {
+            const resolve = nextPromptResolverRef.current;
+            nextPromptResolverRef.current = null;
+            nextPromptRejecterRef.current = null;
+            resolve(msg.prompt);
+          }
         }
       };
 
       ws.onclose = () => {
         wsRef.current = null;
+        readLoopActiveRef.current = false;
+
+        if (nextPromptRejecterRef.current) {
+          nextPromptRejecterRef.current(new Error("disconnected"));
+          nextPromptResolverRef.current = null;
+          nextPromptRejecterRef.current = null;
+        }
+
         if (terminalRef.current) {
           terminalRef.current.options.disableStdin = true;
         }
@@ -159,6 +231,9 @@ export const useWebAccessSession = ({
     currentPromptRef.current = "";
 
     const prompt = (message: string): Promise<string> => {
+      if (!isSSH && readlineRef.current) {
+        return readlineRef.current.read(message);
+      }
       return new Promise((resolve) => {
         terminal.write(message);
         promptCallbackRef.current = resolve;
@@ -168,13 +243,27 @@ export const useWebAccessSession = ({
     try {
       const { data } = await apiRequest.post<{ ticket: string }>(
         `/api/v1/pam/accounts/${accountId}/web-access-ticket`,
-        { projectId }
+        { projectId, reason: submittedReasonRef.current }
       );
       if (containerEl) {
         containerEl.style.width = "";
         isWidenedRef.current = false;
       }
       if (fitAddonRef.current) fitAddonRef.current.fit();
+
+      if (isSSH && submittedReasonRef.current === undefined && !askedOptionalReasonRef.current) {
+        askedOptionalReasonRef.current = true;
+        const optional = await prompt(
+          "\r\nOptionally provide a reason for this session (press Enter to skip): "
+        );
+        if (optional.trim()) {
+          submittedReasonRef.current = optional.trim();
+          terminal.reset();
+          connect();
+          return;
+        }
+      }
+
       terminal.reset();
       openWebSocket(terminal, data.ticket);
     } catch (err: unknown) {
@@ -260,7 +349,7 @@ export const useWebAccessSession = ({
           terminal.reset();
           const { data: retryData } = await apiRequest.post<{ ticket: string }>(
             `/api/v1/pam/accounts/${accountId}/web-access-ticket`,
-            { projectId, mfaSessionId }
+            { projectId, mfaSessionId, reason: submittedReasonRef.current }
           );
           openWebSocket(terminal, retryData.ticket);
         } catch {
@@ -309,7 +398,7 @@ export const useWebAccessSession = ({
 
           terminal.write("\r\nApproval request created successfully!\r\n");
 
-          const approvalUrl = `${window.location.origin}/organizations/${orgId}/projects/pam/${projectId}/approval-requests/${approvalData.request.id}`;
+          const approvalUrl = `${window.location.origin}/organizations/${orgId}/projects/pam/${projectId}/approvals/${approvalData.request.id}`;
           terminal.write(`View details at: ${approvalUrl}\r\n`);
 
           await prompt("\r\nOnce approved, press Enter to reconnect.");
@@ -326,6 +415,25 @@ export const useWebAccessSession = ({
           terminal.reset();
           connect();
         }
+        return;
+      }
+
+      if (axiosErr?.response?.data?.error === "PAM_REASON_REQUIRED") {
+        terminal.write("\r\nThis account requires a reason for access.\r\n");
+
+        const reasonInput = await prompt("\r\nEnter reason: ");
+
+        if (!reasonInput.trim()) {
+          terminal.write("\r\nA reason is required to continue.\r\n");
+          await prompt("\r\nPress Enter to try again.");
+          terminal.reset();
+          connect();
+          return;
+        }
+
+        submittedReasonRef.current = reasonInput.trim();
+        terminal.reset();
+        connect();
         return;
       }
 
@@ -443,39 +551,19 @@ export const useWebAccessSession = ({
         }
       });
     } else {
-      // Postgres: existing line-buffered behavior
-      terminal.onData((data) => {
-        if (data === "\r") {
-          terminal.write("\r\n");
-          if (promptCallbackRef.current) {
-            const cb = promptCallbackRef.current;
-            promptCallbackRef.current = null;
-            cb(inputBufferRef.current);
-            inputBufferRef.current = "";
-          } else if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({ type: WsMessageType.Input, data: inputBufferRef.current })
-            );
-            inputBufferRef.current = "";
-          }
-        } else if (data === "\x7f") {
-          if (inputBufferRef.current.length > 0) {
-            inputBufferRef.current = inputBufferRef.current.slice(0, -1);
-            terminal.write("\b \b");
-          }
-        } else if (data === "\x03") {
-          terminal.write("^C\r\n");
-          inputBufferRef.current = "";
+      // Non-SSH (PostgreSQL, Redis): use xterm-readline for full line-editing support
+      const readlineAddon = new Readline();
+      terminal.loadAddon(readlineAddon);
+      readlineRef.current = readlineAddon;
+
+      // Ctrl+C: send clear-buffer to backend (readline handles visual reset internally)
+      terminal.onKey(({ domEvent }) => {
+        if (domEvent.ctrlKey && domEvent.key === "c") {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(
               JSON.stringify({ type: WsMessageType.Control, data: "clear-buffer" })
             );
           }
-          terminal.write(currentPromptRef.current);
-        } else if (data >= " " || data === "\t") {
-          const normalized = data.replace(/\r\n|\r/g, "\n");
-          inputBufferRef.current += normalized;
-          terminal.write(normalized.replace(/\n/g, "\r\n"));
         }
       });
     }
@@ -490,6 +578,8 @@ export const useWebAccessSession = ({
     connect();
 
     return () => {
+      readLoopActiveRef.current = false;
+      readlineRef.current = null;
       terminalRef.current = null;
       fitAddonRef.current = null;
       window.removeEventListener("resize", handleResize);

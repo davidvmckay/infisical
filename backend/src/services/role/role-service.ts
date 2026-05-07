@@ -2,8 +2,12 @@ import { packRules } from "@casl/ability/extra";
 import { requestContext } from "@fastify/request-context";
 
 import { AccessScope, ActionProjectType, OrganizationActionScope, TableName } from "@app/db/schemas";
+import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { validateHandlebarTemplate } from "@app/lib/template/validate-handlebars";
 import { UnpackedPermissionSchema, unpackPermissions } from "@app/server/routes/sanitizedSchema/permission";
 import { TMembershipRoleDALFactory } from "@app/services/membership/membership-role-dal";
@@ -34,6 +38,7 @@ type TRoleServiceFactoryDep = {
   projectDAL: Pick<TProjectDALFactory, "findById">;
   externalGroupOrgRoleMappingDAL: Pick<TExternalGroupOrgRoleMappingDALFactory, "findOne">;
   membershipRoleDAL: Pick<TMembershipRoleDALFactory, "find">;
+  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
 };
 
 export type TRoleServiceFactory = ReturnType<typeof roleServiceFactory>;
@@ -45,7 +50,8 @@ export const roleServiceFactory = ({
   identityDAL,
   userDAL,
   externalGroupOrgRoleMappingDAL,
-  membershipRoleDAL
+  membershipRoleDAL,
+  licenseService
 }: TRoleServiceFactoryDep) => {
   const orgRoleFactory = newOrgRoleFactory({
     permissionService,
@@ -65,12 +71,20 @@ export const roleServiceFactory = ({
     const factory = scopeFactory[scopeData.scope];
     await factory.onCreateRoleGuard(dto);
 
+    const plan = await licenseService.getPlan(dto.permission.orgId);
+    if (!plan?.rbac) {
+      throw new BadRequestError({
+        message:
+          "Failed to create custom role due to plan RBAC restriction. Upgrade to Infisical Enterprise plan to create custom roles."
+      });
+    }
+
     const scope = factory.getScopeField(scopeData);
     const existingRole = await roleDAL.findOne({
       slug: data.slug,
       [scope.key]: scope.value
     });
-    if (existingRole) throw new NotFoundError({ message: `Role with ${data.slug} exists` });
+    if (existingRole) throw new BadRequestError({ message: `Role with ${data.slug} already exists` });
 
     validateHandlebarTemplate("Role Creation", JSON.stringify(data.permissions || []), {
       allowedExpressions: (val) => val.includes("identity.")
@@ -93,6 +107,14 @@ export const roleServiceFactory = ({
     const scope = factory.getScopeField(scopeData);
 
     await factory.onUpdateRoleGuard(dto);
+
+    const plan = await licenseService.getPlan(dto.permission.orgId);
+    if (!plan?.rbac) {
+      throw new BadRequestError({
+        message:
+          "Failed to update custom role due to plan RBAC restriction. Upgrade to Infisical Enterprise plan to update custom roles."
+      });
+    }
 
     const existingRole = await roleDAL.findOne({
       id: dto.selector.id,
@@ -250,7 +272,7 @@ export const roleServiceFactory = ({
         actorOrgId: dto.permission.orgId
       });
 
-      const assumedPrivilegeDetailsCtx = requestContext.get("assumedPrivilegeDetails");
+      const assumedPrivilegeDetailsCtx = requestContext.get(RequestContextKey.AssumedPrivilegeDetails);
       const isAssumingPrivilege = assumedPrivilegeDetailsCtx?.projectId === dto.scopeData.projectId;
       const assumedPrivilegeDetails = isAssumingPrivilege
         ? {
@@ -262,7 +284,10 @@ export const roleServiceFactory = ({
         : undefined;
 
       if (assumedPrivilegeDetails?.actorType === ActorType.IDENTITY) {
-        const identityDetails = await identityDAL.findById(assumedPrivilegeDetails.actorId);
+        const identityDetails = await requestMemoize(
+          requestMemoKeys.identityFindById(assumedPrivilegeDetails.actorId),
+          () => identityDAL.findById(assumedPrivilegeDetails.actorId)
+        );
         if (!identityDetails)
           throw new NotFoundError({ message: `Identity with ID ${assumedPrivilegeDetails.actorId} not found` });
         assumedPrivilegeDetails.actorName = identityDetails.name;

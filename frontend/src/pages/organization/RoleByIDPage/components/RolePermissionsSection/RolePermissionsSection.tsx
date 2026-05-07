@@ -18,8 +18,11 @@ import {
 import { OrgPermissionAdminConsoleRow } from "./OrgPermissionAdminConsoleRow";
 import { OrgPermissionAuditLogsRow } from "./OrgPermissionAuditLogsRow";
 import { OrgPermissionBillingRow } from "./OrgPermissionBillingRow";
+import { OrgPermissionEmailDomainRow } from "./OrgPermissionEmailDomainRow";
+import { OrgGatewayPoolPermissionRow } from "./OrgPermissionGatewayPoolRow";
 import { OrgGatewayPermissionRow } from "./OrgPermissionGatewayRow";
 import { OrgPermissionGroupRow } from "./OrgPermissionGroupRow";
+import { OrgPermissionHoneyTokenRow } from "./OrgPermissionHoneyTokenRow";
 import { OrgPermissionIdentityRow } from "./OrgPermissionIdentityRow";
 import { OrgPermissionKmipRow } from "./OrgPermissionKmipRow";
 import { OrgPermissionMachineIdentityAuthTemplateRow } from "./OrgPermissionMachineIdentityAuthTemplateRow";
@@ -203,6 +206,11 @@ export const RolePermissionsSection = ({ roleId }: Props) => {
                 setValue={setValue}
                 isEditable={isCustomRole}
               />
+              <OrgGatewayPoolPermissionRow
+                control={control}
+                setValue={setValue}
+                isEditable={isCustomRole}
+              />
               <OrgRelayPermissionRow
                 control={control}
                 setValue={setValue}
@@ -215,7 +223,17 @@ export const RolePermissionsSection = ({ roleId }: Props) => {
                   isEditable={isCustomRole}
                 />
               )}
+              <OrgPermissionEmailDomainRow
+                control={control}
+                setValue={setValue}
+                isEditable={isCustomRole}
+              />
               <OrgPermissionSecretShareRow
+                control={control}
+                setValue={setValue}
+                isEditable={isCustomRole}
+              />
+              <OrgPermissionHoneyTokenRow
                 control={control}
                 setValue={setValue}
                 isEditable={isCustomRole}

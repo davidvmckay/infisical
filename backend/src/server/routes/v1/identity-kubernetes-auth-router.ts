@@ -1,16 +1,20 @@
 import { z } from "zod";
 
-import { IdentityKubernetesAuthsSchema } from "@app/db/schemas";
+import { IdentityAuthMethod, IdentityKubernetesAuthsSchema } from "@app/db/schemas";
 import { EventType } from "@app/ee/services/audit-log/audit-log-types";
 import { ApiDocsTags, KUBERNETES_AUTH } from "@app/lib/api-docs";
+import { UnauthorizedError } from "@app/lib/errors";
+import { logger } from "@app/lib/logger";
 import { CharacterType, characterValidator } from "@app/lib/validator/validate-string";
 import { readLimit, writeLimit } from "@app/server/config/rateLimiter";
 import { slugSchema } from "@app/server/lib/schemas";
+import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
-import { AuthMode } from "@app/services/auth/auth-type";
+import { ActorType, AuthMode } from "@app/services/auth/auth-type";
 import { TIdentityTrustedIp } from "@app/services/identity/identity-types";
 import { IdentityKubernetesAuthTokenReviewMode } from "@app/services/identity-kubernetes-auth/identity-kubernetes-auth-types";
 import { isSuperAdmin } from "@app/services/super-admin/super-admin-fns";
+import { PostHogEventTypes } from "@app/services/telemetry/telemetry-types";
 
 const IdentityKubernetesAuthResponseSchema = IdentityKubernetesAuthsSchema.pick({
   id: true,
@@ -26,7 +30,9 @@ const IdentityKubernetesAuthResponseSchema = IdentityKubernetesAuthsSchema.pick(
   allowedNamespaces: true,
   allowedNames: true,
   allowedAudience: true,
-  gatewayId: true
+  gatewayId: true,
+  gatewayPoolId: true,
+  verifyTlsCertificate: true
 }).extend({
   caCert: z.string(),
   tokenReviewerJwt: z.string().optional().nullable()
@@ -59,27 +65,80 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
       }
     },
     handler: async (req) => {
-      const { identityKubernetesAuth, accessToken, identityAccessToken, identity } =
-        await server.services.identityKubernetesAuth.login(req.body);
+      try {
+        const { identityKubernetesAuth, accessToken, identityAccessToken, identity } =
+          await server.services.identityKubernetesAuth.login(req.body);
 
-      await server.services.auditLog.createAuditLog({
-        ...req.auditLogInfo,
-        orgId: identity.orgId,
-        event: {
-          type: EventType.LOGIN_IDENTITY_KUBERNETES_AUTH,
-          metadata: {
-            identityId: identityKubernetesAuth.identityId,
-            identityAccessTokenId: identityAccessToken.id,
-            identityKubernetesAuthId: identityKubernetesAuth.id
+        await server.services.auditLog.createAuditLog({
+          ...req.auditLogInfo,
+          actor: {
+            type: ActorType.IDENTITY,
+            metadata: {
+              identityId: identityKubernetesAuth.identityId,
+              name: identity.name
+            }
+          },
+          orgId: identity.orgId,
+          event: {
+            type: EventType.LOGIN_IDENTITY_KUBERNETES_AUTH,
+            metadata: {
+              identityId: identityKubernetesAuth.identityId,
+              identityAccessTokenId: identityAccessToken.id,
+              identityKubernetesAuthId: identityKubernetesAuth.id
+            }
           }
+        });
+
+        void server.services.telemetry
+          .sendPostHogEvents({
+            event: PostHogEventTypes.MachineIdentityLogin,
+            distinctId: `identity-${identityKubernetesAuth.identityId}`,
+            organizationId: identity.orgId,
+            properties: {
+              identityId: identityKubernetesAuth.identityId,
+              orgId: identity.orgId,
+              authMethod: IdentityAuthMethod.KUBERNETES_AUTH
+            }
+          })
+          .catch((error) => {
+            logger.error(error, `Failed to send telemetry event [identityId=${identityKubernetesAuth.identityId}]`);
+          });
+
+        return {
+          accessToken,
+          tokenType: "Bearer" as const,
+          expiresIn: identityKubernetesAuth.accessTokenTTL,
+          accessTokenMaxTTL: identityKubernetesAuth.accessTokenMaxTTL
+        };
+      } catch (error) {
+        if (
+          error instanceof UnauthorizedError &&
+          error.detail?.orgId &&
+          error.detail?.identityId &&
+          error.detail?.identityName
+        ) {
+          await server.services.auditLog.createAuditLog({
+            ...req.auditLogInfo,
+            actor: {
+              type: ActorType.IDENTITY,
+              metadata: {
+                identityId: error.detail.identityId as string,
+                name: error.detail.identityName as string
+              }
+            },
+            orgId: error.detail.orgId as string,
+            event: {
+              type: EventType.LOGIN_IDENTITY_KUBERNETES_AUTH_FAILED,
+              metadata: {
+                identityId: error.detail.identityId as string,
+                reasonCode: error.detail.reasonCode as string,
+                message: error.message
+              }
+            }
+          });
         }
-      });
-      return {
-        accessToken,
-        tokenType: "Bearer" as const,
-        expiresIn: identityKubernetesAuth.accessTokenTTL,
-        accessTokenMaxTTL: identityKubernetesAuth.accessTokenMaxTTL
-      };
+        throw error;
+      }
     }
   });
 
@@ -130,6 +189,7 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
               }
             ),
           caCert: z.string().trim().default("").describe(KUBERNETES_AUTH.ATTACH.caCert),
+          verifyTlsCertificate: z.boolean().optional().describe(KUBERNETES_AUTH.ATTACH.verifyTlsCertificate),
           tokenReviewerJwt: z.string().trim().optional().describe(KUBERNETES_AUTH.ATTACH.tokenReviewerJwt),
           tokenReviewMode: z
             .nativeEnum(IdentityKubernetesAuthTokenReviewMode)
@@ -139,6 +199,7 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           allowedNames: z.string().describe(KUBERNETES_AUTH.ATTACH.allowedNames),
           allowedAudience: z.string().describe(KUBERNETES_AUTH.ATTACH.allowedAudience),
           gatewayId: z.string().uuid().optional().nullable().describe(KUBERNETES_AUTH.ATTACH.gatewayId),
+          gatewayPoolId: z.string().uuid().optional().nullable(),
           accessTokenTrustedIps: z
             .object({
               ipAddress: z.string().trim()
@@ -176,11 +237,22 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
               message: "When token review mode is set to API, a Kubernetes host must be provided"
             });
           }
-          if (data.tokenReviewMode === IdentityKubernetesAuthTokenReviewMode.Gateway && !data.gatewayId) {
+          if (
+            data.tokenReviewMode === IdentityKubernetesAuthTokenReviewMode.Gateway &&
+            !data.gatewayId &&
+            !data.gatewayPoolId
+          ) {
             ctx.addIssue({
               path: ["gatewayId"],
               code: z.ZodIssueCode.custom,
-              message: "When token review mode is set to Gateway, a gateway must be selected"
+              message: "When token review mode is set to Gateway, a gateway or gateway pool must be selected"
+            });
+          }
+          if (data.gatewayId && data.gatewayPoolId) {
+            ctx.addIssue({
+              path: ["gatewayPoolId"],
+              code: z.ZodIssueCode.custom,
+              message: "Cannot specify both a gateway and a gateway pool"
             });
           }
 
@@ -189,6 +261,30 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
               path: ["accessTokenTTL"],
               code: z.ZodIssueCode.custom,
               message: "Access Token TTL cannot be greater than Access Token Max TTL."
+            });
+          }
+          if (
+            data.verifyTlsCertificate &&
+            data.tokenReviewMode === IdentityKubernetesAuthTokenReviewMode.Api &&
+            !data.caCert?.length
+          ) {
+            ctx.addIssue({
+              path: ["caCert"],
+              code: z.ZodIssueCode.custom,
+              message:
+                "A CA certificate is required when TLS certificate verification is enabled. Either paste the Kubernetes API server's CA certificate or disable verification."
+            });
+          }
+          if (
+            data.verifyTlsCertificate === false &&
+            data.tokenReviewMode === IdentityKubernetesAuthTokenReviewMode.Api &&
+            data.caCert?.length
+          ) {
+            ctx.addIssue({
+              path: ["verifyTlsCertificate"],
+              code: z.ZodIssueCode.custom,
+              message:
+                "TLS certificate verification cannot be disabled when a CA certificate is provided. Either remove the CA certificate or enable verification."
             });
           }
         }),
@@ -226,6 +322,21 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           }
         }
       });
+
+      void server.services.telemetry
+        .sendPostHogEvents({
+          event: PostHogEventTypes.MachineIdentityAuthMethodAttached,
+          distinctId: getTelemetryDistinctId(req),
+          organizationId: identityKubernetesAuth.orgId,
+          properties: {
+            identityId: identityKubernetesAuth.identityId,
+            orgId: identityKubernetesAuth.orgId,
+            authMethod: IdentityAuthMethod.KUBERNETES_AUTH
+          }
+        })
+        .catch((error) => {
+          logger.error(error, `Failed to send telemetry event [identityId=${identityKubernetesAuth.identityId}]`);
+        });
 
       return { identityKubernetesAuth: IdentityKubernetesAuthResponseSchema.parse(identityKubernetesAuth) };
     }
@@ -279,6 +390,7 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
               }
             ),
           caCert: z.string().trim().optional().describe(KUBERNETES_AUTH.UPDATE.caCert),
+          verifyTlsCertificate: z.boolean().optional().describe(KUBERNETES_AUTH.UPDATE.verifyTlsCertificate),
           tokenReviewerJwt: z.string().trim().nullable().optional().describe(KUBERNETES_AUTH.UPDATE.tokenReviewerJwt),
           tokenReviewMode: z
             .nativeEnum(IdentityKubernetesAuthTokenReviewMode)
@@ -288,6 +400,7 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           allowedNames: z.string().optional().describe(KUBERNETES_AUTH.UPDATE.allowedNames),
           allowedAudience: z.string().optional().describe(KUBERNETES_AUTH.UPDATE.allowedAudience),
           gatewayId: z.string().uuid().optional().nullable().describe(KUBERNETES_AUTH.UPDATE.gatewayId),
+          gatewayPoolId: z.string().uuid().optional().nullable(),
           accessTokenTrustedIps: z
             .object({
               ipAddress: z.string().trim()
@@ -321,12 +434,20 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           if (
             data.tokenReviewMode &&
             data.tokenReviewMode === IdentityKubernetesAuthTokenReviewMode.Gateway &&
-            !data.gatewayId
+            !data.gatewayId &&
+            !data.gatewayPoolId
           ) {
             ctx.addIssue({
               path: ["gatewayId"],
               code: z.ZodIssueCode.custom,
-              message: "When token review mode is set to Gateway, a gateway must be selected"
+              message: "When token review mode is set to Gateway, a gateway or gateway pool must be selected"
+            });
+          }
+          if (data.gatewayId && data.gatewayPoolId) {
+            ctx.addIssue({
+              path: ["gatewayPoolId"],
+              code: z.ZodIssueCode.custom,
+              message: "Cannot specify both a gateway and a gateway pool"
             });
           }
           if (data.accessTokenMaxTTL && data.accessTokenTTL ? data.accessTokenTTL > data.accessTokenMaxTTL : false) {
@@ -370,6 +491,21 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           }
         }
       });
+
+      void server.services.telemetry
+        .sendPostHogEvents({
+          event: PostHogEventTypes.MachineIdentityAuthMethodUpdated,
+          distinctId: getTelemetryDistinctId(req),
+          organizationId: identityKubernetesAuth.orgId,
+          properties: {
+            identityId: identityKubernetesAuth.identityId,
+            orgId: identityKubernetesAuth.orgId,
+            authMethod: IdentityAuthMethod.KUBERNETES_AUTH
+          }
+        })
+        .catch((error) => {
+          logger.error(error, `Failed to send telemetry event [identityId=${identityKubernetesAuth.identityId}]`);
+        });
 
       return { identityKubernetesAuth };
     }
@@ -473,6 +609,21 @@ export const registerIdentityKubernetesRouter = async (server: FastifyZodProvide
           }
         }
       });
+
+      void server.services.telemetry
+        .sendPostHogEvents({
+          event: PostHogEventTypes.MachineIdentityAuthMethodRevoked,
+          distinctId: getTelemetryDistinctId(req),
+          organizationId: identityKubernetesAuth.orgId,
+          properties: {
+            identityId: identityKubernetesAuth.identityId,
+            orgId: identityKubernetesAuth.orgId,
+            authMethod: IdentityAuthMethod.KUBERNETES_AUTH
+          }
+        })
+        .catch((error) => {
+          logger.error(error, `Failed to send telemetry event [identityId=${identityKubernetesAuth.identityId}]`);
+        });
 
       return { identityKubernetesAuth };
     }

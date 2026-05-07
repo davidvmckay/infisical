@@ -43,16 +43,23 @@ type Props = {
   secretValueHidden: boolean;
   secretPath: string;
   onSecretCreate: (env: string, key: string, value: string) => Promise<void>;
-  onSecretUpdate: (
-    env: string,
-    key: string,
-    value: string,
-    secretValueHidden: boolean,
-    type?: SecretType,
-    secretId?: string
-  ) => Promise<void>;
+  onSecretUpdate: (params: {
+    env: string;
+    key: string;
+    value: string | undefined;
+    secretValueHidden: boolean;
+    type?: SecretType;
+    secretId?: string;
+    newSecretName?: string;
+    secretComment?: string;
+    tags?: { id: string; slug: string }[];
+    secretMetadata?: { key: string; value: string; isEncrypted?: boolean }[];
+    skipMultilineEncoding?: boolean | null;
+    originalValue?: string;
+  }) => Promise<void>;
   onSecretDelete: (env: string, key: string, secretId?: string) => Promise<void>;
   isRotatedSecret?: boolean;
+  isHoneyTokenSecret?: boolean;
   isEmpty?: boolean;
   importedSecret?:
     | {
@@ -88,11 +95,18 @@ export const SecretEditRow = ({
   isVisible,
   secretId,
   isRotatedSecret,
+  isHoneyTokenSecret,
   importedBy,
   importedSecret,
   isEmpty,
   isSecretPresent
 }: Props) => {
+  const isManagedSecret = isRotatedSecret || isHoneyTokenSecret;
+
+  let deleteTooltipContent = "Delete";
+  if (isHoneyTokenSecret) deleteTooltipContent = "Cannot Delete Honey Token Secret";
+  else if (isRotatedSecret) deleteTooltipContent = "Cannot Delete Rotated Secret";
+
   const { handlePopUpOpen, handlePopUpToggle, handlePopUpClose, popUp } = usePopUp([
     "editSecret",
     "secretReferenceTree"
@@ -197,14 +211,14 @@ export const SecretEditRow = ({
           handlePopUpOpen("editSecret", { secretValue: value });
           return;
         }
-        await onSecretUpdate(
-          environment,
-          secretName,
+        await onSecretUpdate({
+          env: environment,
+          key: secretName,
           value,
           secretValueHidden,
-          isOverride ? SecretType.Personal : SecretType.Shared,
+          type: isOverride ? SecretType.Personal : SecretType.Shared,
           secretId
-        );
+        });
       }
     }
     if (secretValueHidden && !isOverride) {
@@ -217,14 +231,14 @@ export const SecretEditRow = ({
   };
 
   const handleEditSecret = async ({ secretValue }: { secretValue: string }) => {
-    await onSecretUpdate(
-      environment,
-      secretName,
-      secretValue,
+    await onSecretUpdate({
+      env: environment,
+      key: secretName,
+      value: secretValue,
       secretValueHidden,
-      isOverride ? SecretType.Personal : SecretType.Shared,
+      type: isOverride ? SecretType.Personal : SecretType.Shared,
       secretId
-    );
+    });
     reset({ value: secretValue });
     handlePopUpClose("editSecret");
   };
@@ -267,7 +281,7 @@ export const SecretEditRow = ({
       />
       {secretValueHidden && !isOverride && (
         <Tooltip
-          content={`You do not have access to view the current value${canEditSecretValue && !isRotatedSecret ? ", but you can set a new one" : "."}`}
+          content={`You do not have access to view the current value${canEditSecretValue && !isManagedSecret ? ", but you can set a new one" : "."}`}
         >
           <FontAwesomeIcon className="pl-2" size="sm" icon={faEyeSlash} />
         </Tooltip>
@@ -281,7 +295,7 @@ export const SecretEditRow = ({
               {...field}
               isReadOnly={
                 isImportedSecret ||
-                (isRotatedSecret && !isOverride) ||
+                (isManagedSecret && !isOverride) ||
                 isFetchingSecretValue ||
                 isErrorFetchingSecretValue
               }
@@ -299,7 +313,7 @@ export const SecretEditRow = ({
               environment={environment}
               isImport={isImportedSecret}
               defaultValue={secretValueHidden ? "" : undefined}
-              canEditButNotView={secretValueHidden && !isOverride}
+              canEditButNotView={secretValueHidden && !isOverride && !isManagedSecret}
               onFocus={() => setIsFieldFocused.on()}
               onBlur={() => {
                 field.onBlur();
@@ -417,13 +431,13 @@ export const SecretEditRow = ({
             >
               {(isAllowed) => (
                 <div className="opacity-0 group-hover:opacity-100">
-                  <Tooltip content={isRotatedSecret ? "Cannot Delete Rotated Secret" : "Delete"}>
+                  <Tooltip content={deleteTooltipContent}>
                     <IconButton
                       variant="plain"
                       ariaLabel="delete-value"
                       className="h-full"
                       onClick={toggleModal}
-                      isDisabled={isDeleting || !isAllowed || isRotatedSecret}
+                      isDisabled={isDeleting || !isAllowed || isManagedSecret}
                     >
                       <FontAwesomeIcon icon={faTrash} />
                     </IconButton>

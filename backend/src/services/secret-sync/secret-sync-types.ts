@@ -48,6 +48,9 @@ import {
   TWindmillSyncWithCredentials
 } from "@app/services/secret-sync/windmill";
 
+import { TAppConnectionDALFactory } from "../app-connection/app-connection-dal";
+import { TKmsServiceFactory } from "../kms/kms-service";
+import { TSecretV2BridgeDALFactory } from "../secret-v2-bridge/secret-v2-bridge-dal";
 import {
   TOnePassSync,
   TOnePassSyncInput,
@@ -72,6 +75,12 @@ import {
   TAzureDevOpsSyncListItem,
   TAzureDevOpsSyncWithCredentials
 } from "./azure-devops";
+import {
+  TAzureEntraIdScimSync,
+  TAzureEntraIdScimSyncInput,
+  TAzureEntraIdScimSyncListItem,
+  TAzureEntraIdScimSyncWithCredentials
+} from "./azure-entra-id-scim";
 import {
   TAzureKeyVaultSync,
   TAzureKeyVaultSyncInput,
@@ -103,11 +112,18 @@ import {
   TCloudflareWorkersSyncListItem,
   TCloudflareWorkersSyncWithCredentials
 } from "./cloudflare-workers";
+import { TDevinSync, TDevinSyncInput, TDevinSyncListItem, TDevinSyncWithCredentials } from "./devin/devin-sync-types";
 import {
   TDigitalOceanAppPlatformSyncInput,
   TDigitalOceanAppPlatformSyncListItem,
   TDigitalOceanAppPlatformSyncWithCredentials
 } from "./digital-ocean-app-platform/digital-ocean-app-platform-sync-types";
+import {
+  TExternalInfisicalSync,
+  TExternalInfisicalSyncInput,
+  TExternalInfisicalSyncListItem,
+  TExternalInfisicalSyncWithCredentials
+} from "./external-infisical";
 import { TFlyioSync, TFlyioSyncInput, TFlyioSyncListItem, TFlyioSyncWithCredentials } from "./flyio/flyio-sync-types";
 import { TGcpSync, TGcpSyncInput, TGcpSyncListItem, TGcpSyncWithCredentials } from "./gcp";
 import { TGitLabSync, TGitLabSyncInput, TGitLabSyncListItem, TGitLabSyncWithCredentials } from "./gitlab";
@@ -143,6 +159,8 @@ import {
   TOctopusDeploySyncListItem,
   TOctopusDeploySyncWithCredentials
 } from "./octopus-deploy";
+import { TOnaSync, TOnaSyncInput, TOnaSyncListItem, TOnaSyncWithCredentials } from "./ona";
+import { TOvhSync, TOvhSyncInput, TOvhSyncListItem, TOvhSyncWithCredentials } from "./ovh";
 import {
   TRailwaySync,
   TRailwaySyncInput,
@@ -155,6 +173,12 @@ import {
   TRenderSyncListItem,
   TRenderSyncWithCredentials
 } from "./render/render-sync-types";
+import {
+  TSnowflakeSync,
+  TSnowflakeSyncInput,
+  TSnowflakeSyncListItem,
+  TSnowflakeSyncWithCredentials
+} from "./snowflake";
 import {
   TSupabaseSync,
   TSupabaseSyncInput,
@@ -173,6 +197,7 @@ import {
   TTerraformCloudSyncListItem,
   TTerraformCloudSyncWithCredentials
 } from "./terraform-cloud";
+import { TTravisCISync, TTravisCISyncInput, TTravisCISyncListItem, TTravisCISyncWithCredentials } from "./travis-ci";
 import { TVercelSync, TVercelSyncInput, TVercelSyncListItem, TVercelSyncWithCredentials } from "./vercel";
 import { TZabbixSync, TZabbixSyncInput, TZabbixSyncListItem, TZabbixSyncWithCredentials } from "./zabbix";
 
@@ -210,7 +235,14 @@ export type TSecretSync =
   | TNorthflankSync
   | TBitbucketSync
   | TOctopusDeploySync
-  | TCircleCISync;
+  | TCircleCISync
+  | TAzureEntraIdScimSync
+  | TExternalInfisicalSync
+  | TOvhSync
+  | TDevinSync
+  | TOnaSync
+  | TTravisCISync
+  | TSnowflakeSync;
 
 export type TSecretSyncWithCredentials =
   | TAwsParameterStoreSyncWithCredentials
@@ -247,7 +279,14 @@ export type TSecretSyncWithCredentials =
   | TBitbucketSyncWithCredentials
   | TLaravelForgeSyncWithCredentials
   | TOctopusDeploySyncWithCredentials
-  | TCircleCISyncWithCredentials;
+  | TCircleCISyncWithCredentials
+  | TAzureEntraIdScimSyncWithCredentials
+  | TExternalInfisicalSyncWithCredentials
+  | TOvhSyncWithCredentials
+  | TDevinSyncWithCredentials
+  | TOnaSyncWithCredentials
+  | TTravisCISyncWithCredentials
+  | TSnowflakeSyncWithCredentials;
 
 export type TSecretSyncInput =
   | TAwsParameterStoreSyncInput
@@ -284,7 +323,14 @@ export type TSecretSyncInput =
   | TBitbucketSyncInput
   | TLaravelForgeSyncInput
   | TOctopusDeploySyncInput
-  | TCircleCISyncInput;
+  | TCircleCISyncInput
+  | TAzureEntraIdScimSyncInput
+  | TExternalInfisicalSyncInput
+  | TOvhSyncInput
+  | TDevinSyncInput
+  | TOnaSyncInput
+  | TTravisCISyncInput
+  | TSnowflakeSyncInput;
 
 export type TSecretSyncListItem =
   | TAwsParameterStoreSyncListItem
@@ -321,10 +367,20 @@ export type TSecretSyncListItem =
   | TNorthflankSyncListItem
   | TBitbucketSyncListItem
   | TOctopusDeploySyncListItem
-  | TCircleCISyncListItem;
+  | TCircleCISyncListItem
+  | TAzureEntraIdScimSyncListItem
+  | TExternalInfisicalSyncListItem
+  | TOvhSyncListItem
+  | TDevinSyncListItem
+  | TOnaSyncListItem
+  | TTravisCISyncListItem
+  | TSnowflakeSyncListItem;
 
 export type TSyncOptionsConfig = {
   canImportSecrets: boolean;
+  canRemoveSecretsOnDeletion?: boolean;
+  supportsKeySchema?: boolean;
+  supportsDisableSecretDeletion?: boolean;
 };
 
 export type TListSecretSyncsByProjectId = {
@@ -388,6 +444,12 @@ export enum SecretSyncAction {
   ImportSecrets = "import-secrets",
   RemoveSecrets = "remove-secrets"
 }
+
+export type TSyncSecretsResult = {
+  createdSecretKeys: string[];
+  updatedSecretKeys: string[];
+  deletedSecretKeys: string[];
+};
 
 export type TSecretSyncRaw = NonNullable<Awaited<ReturnType<TSecretSyncDALFactory["findById"]>>>;
 
@@ -455,6 +517,7 @@ export type TSecretMap = Record<
   string,
   {
     value: string;
+    id?: string;
     comment?: string;
     skipMultilineEncoding?: boolean | null | undefined;
     secretMetadata?: ResourceMetadataDTO;
@@ -465,3 +528,30 @@ export type DestinationDuplicateCheckFn = (
   existingConfig: Record<string, unknown>,
   newConfig: Record<string, unknown>
 ) => boolean;
+
+export type TPreSaveTransformDeps = {
+  secretV2BridgeDAL: Pick<TSecretV2BridgeDALFactory, "findOne">;
+  appConnectionDAL: Pick<TAppConnectionDALFactory, "findById" | "updateById">;
+  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+};
+
+export type TPreSaveTransformSyncOptionsParams = {
+  syncOptions: Record<string, unknown> | undefined;
+  existingSyncOptions?: Record<string, unknown>;
+  folderId: string;
+};
+
+export type TPreSaveTransformDestinationConfigParams = {
+  destinationConfig: Record<string, unknown> | undefined;
+  connectionId: string;
+};
+
+export type TPreSaveTransformSyncOptionsFn = (
+  params: TPreSaveTransformSyncOptionsParams,
+  deps: TPreSaveTransformDeps
+) => Promise<Record<string, unknown> | undefined>;
+
+export type TPreSaveTransformDestinationConfigFn = (
+  params: TPreSaveTransformDestinationConfigParams,
+  deps: TPreSaveTransformDeps
+) => Promise<Record<string, unknown> | undefined>;

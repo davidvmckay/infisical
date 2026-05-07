@@ -20,13 +20,16 @@ import {
   PermissionBoundaryError,
   UnauthorizedError
 } from "@app/lib/errors";
-import { extractIPDetails, isValidIpOrCidr } from "@app/lib/ip";
+import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { AuthAttemptAuthMethod, AuthAttemptAuthResult, authAttemptCounter } from "@app/lib/telemetry/metrics";
 
-import { ActorType, AuthTokenType } from "../auth/auth-type";
+import { ActorType } from "../auth/auth-type";
 import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TIdentityAccessTokenDALFactory } from "../identity-access-token/identity-access-token-dal";
-import { TIdentityAccessTokenJwtPayload } from "../identity-access-token/identity-access-token-types";
+import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/identity-access-token-service";
 import { TKmsServiceFactory } from "../kms/kms-service";
 import { KmsDataKey } from "../kms/kms-types";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
@@ -37,7 +40,7 @@ import { TIdentityTlsCertAuthServiceFactory } from "./identity-tls-cert-auth-typ
 
 type TIdentityTlsCertAuthServiceFactoryDep = {
   identityDAL: Pick<TIdentityDALFactory, "findById">;
-  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "create" | "delete">;
+  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "delete">;
   identityTlsCertAuthDAL: Pick<
     TIdentityTlsCertAuthDALFactory,
     "findOne" | "transaction" | "create" | "updateById" | "delete"
@@ -47,13 +50,19 @@ type TIdentityTlsCertAuthServiceFactoryDep = {
   permissionService: Pick<TPermissionServiceFactory, "getOrgPermission" | "getProjectPermission">;
   kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findOne" | "findEffectiveOrgMembership">;
+  identityAccessTokenService: Pick<
+    TIdentityAccessTokenServiceFactory,
+    "issueIdentityAccessToken" | "revokeAllTokensForIdentity"
+  >;
 };
 
 const parseSubjectDetails = (data: string) => {
   const values: Record<string, string> = {};
   data.split("\n").forEach((el) => {
     const [key, value] = el.split("=");
-    values[key.trim()] = value.trim();
+    if (key && value) {
+      values[key.trim()] = value.trim();
+    }
   });
   return values;
 };
@@ -66,7 +75,8 @@ export const identityTlsCertAuthServiceFactory = ({
   licenseService,
   permissionService,
   kmsService,
-  orgDAL
+  orgDAL,
+  identityAccessTokenService
 }: TIdentityTlsCertAuthServiceFactoryDep): TIdentityTlsCertAuthServiceFactory => {
   const login: TIdentityTlsCertAuthServiceFactory["login"] = async ({
     identityId,
@@ -81,10 +91,17 @@ export const identityTlsCertAuthServiceFactory = ({
       });
     }
 
-    const identity = await identityDAL.findById(identityTlsCertAuth.identityId);
-    if (!identity) throw new UnauthorizedError({ message: "Identity not found" });
+    const identity = await requestMemoize(requestMemoKeys.identityFindById(identityTlsCertAuth.identityId), () =>
+      identityDAL.findById(identityTlsCertAuth.identityId)
+    );
+    if (!identity)
+      throw new UnauthorizedError({
+        message: "Identity not found"
+      });
 
-    const org = await orgDAL.findById(identity.orgId);
+    const org = await requestMemoize(requestMemoKeys.orgFindById(identity.orgId), () =>
+      orgDAL.findById(identity.orgId)
+    );
     const isSubOrgIdentity = Boolean(org.rootOrgId);
 
     // If the identity is a sub-org identity, then the scope is always the org.id, and if it's a root org identity, then we need to resolve the scope if a organizationSlug is specified
@@ -111,18 +128,36 @@ export const identityTlsCertAuthServiceFactory = ({
       const isValidCertificate = clientCertificateX509.verify(caCertificateX509.publicKey);
       if (!isValidCertificate)
         throw new UnauthorizedError({
-          message: "Access denied: Certificate not issued by the provided CA."
+          message: "Access denied: Certificate not issued by the provided CA.",
+          detail: {
+            reasonCode: "ca_verification_failed",
+            identityId: identity.id,
+            orgId: identity.orgId,
+            identityName: identity.name
+          }
         });
 
       if (new Date(clientCertificateX509.validTo) < new Date()) {
         throw new UnauthorizedError({
-          message: "Access denied: Certificate has expired."
+          message: "Access denied: Certificate has expired.",
+          detail: {
+            reasonCode: "certificate_expired",
+            identityId: identity.id,
+            orgId: identity.orgId,
+            identityName: identity.name
+          }
         });
       }
 
       if (new Date(clientCertificateX509.validFrom) > new Date()) {
         throw new UnauthorizedError({
-          message: "Access denied: Certificate not yet valid."
+          message: "Access denied: Certificate not yet valid.",
+          detail: {
+            reasonCode: "certificate_not_yet_valid",
+            identityId: identity.id,
+            orgId: identity.orgId,
+            identityName: identity.name
+          }
         });
       }
 
@@ -131,12 +166,18 @@ export const identityTlsCertAuthServiceFactory = ({
         const isValidCommonName = identityTlsCertAuth.allowedCommonNames.split(",").includes(subjectDetails.CN);
         if (!isValidCommonName) {
           throw new UnauthorizedError({
-            message: "Access denied: TLS Certificate Auth common name not allowed."
+            message: "Access denied: TLS Certificate Auth common name not allowed.",
+            detail: {
+              reasonCode: "common_name_not_allowed",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
         }
       }
 
-      if (organizationSlug) {
+      if (organizationSlug && org.slug !== organizationSlug) {
         if (!isSubOrgIdentity) {
           const subOrg = await orgDAL.findOne({ rootOrgId: org.id, slug: organizationSlug });
 
@@ -152,7 +193,13 @@ export const identityTlsCertAuthServiceFactory = ({
 
           if (!subOrgMembership) {
             throw new UnauthorizedError({
-              message: `Identity not authorized to access sub organization ${organizationSlug}`
+              message: `Identity not authorized to access sub organization ${organizationSlug}`,
+              detail: {
+                reasonCode: "sub_org_unauthorized",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
 
@@ -161,7 +208,7 @@ export const identityTlsCertAuthServiceFactory = ({
       }
 
       // Generate the token
-      const identityAccessToken = await identityTlsCertAuthDAL.transaction(async (tx) => {
+      await identityTlsCertAuthDAL.transaction(async (tx) => {
         await membershipIdentityDAL.update(
           identity.projectId
             ? {
@@ -181,35 +228,29 @@ export const identityTlsCertAuthServiceFactory = ({
           },
           tx
         );
-        const newToken = await identityAccessTokenDAL.create(
-          {
-            identityId: identityTlsCertAuth.identityId,
-            isAccessTokenRevoked: false,
-            accessTokenTTL: identityTlsCertAuth.accessTokenTTL,
-            accessTokenMaxTTL: identityTlsCertAuth.accessTokenMaxTTL,
-            accessTokenNumUses: 0,
-            accessTokenNumUsesLimit: identityTlsCertAuth.accessTokenNumUsesLimit,
-            authMethod: IdentityAuthMethod.TLS_CERT_AUTH,
-            subOrganizationId
-          },
-          tx
-        );
-        return newToken;
       });
 
-      const accessToken = crypto.jwt().sign(
-        {
-          identityId: identityTlsCertAuth.identityId,
-          identityAccessTokenId: identityAccessToken.id,
-          authTokenType: AuthTokenType.IDENTITY_ACCESS_TOKEN
-        } as TIdentityAccessTokenJwtPayload,
-        appCfg.AUTH_SECRET,
-        Number(identityAccessToken.accessTokenTTL) === 0
-          ? undefined
-          : {
-              expiresIn: Number(identityAccessToken.accessTokenTTL)
-            }
-      );
+      const subOrgDetails =
+        subOrganizationId && subOrganizationId !== org.id ? await orgDAL.findById(subOrganizationId) : null;
+      const tokenScopeOrg = subOrgDetails ?? org;
+      const tokenRootOrgId = tokenScopeOrg.rootOrgId ?? tokenScopeOrg.id;
+      const tokenParentOrgId = tokenScopeOrg.parentOrgId ?? tokenRootOrgId;
+
+      const { accessToken, identityAccessToken } = await identityAccessTokenService.issueIdentityAccessToken({
+        identityId: identityTlsCertAuth.identityId,
+        identityName: identity.name,
+        authMethod: IdentityAuthMethod.TLS_CERT_AUTH,
+        orgId: tokenScopeOrg.id,
+        rootOrgId: tokenRootOrgId,
+        parentOrgId: tokenParentOrgId,
+        subOrganizationId,
+        accessTokenTTL: Number(identityTlsCertAuth.accessTokenTTL),
+        accessTokenMaxTTL: Number(identityTlsCertAuth.accessTokenMaxTTL),
+        accessTokenNumUsesLimit: Number(identityTlsCertAuth.accessTokenNumUsesLimit),
+        // TLS Cert auth schema has no accessTokenPeriod column.
+        accessTokenPeriod: 0,
+        accessTokenTrustedIps: identityTlsCertAuth.accessTokenTrustedIps as TIp[]
+      });
 
       if (appCfg.OTEL_TELEMETRY_COLLECTION_ENABLED) {
         authAttemptCounter.add(1, {
@@ -219,8 +260,8 @@ export const identityTlsCertAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.TLS_CERT_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.SUCCESS,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
 
@@ -239,8 +280,8 @@ export const identityTlsCertAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.TLS_CERT_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.FAILURE,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
       throw error;
@@ -609,6 +650,12 @@ export const identityTlsCertAuthServiceFactory = ({
 
       return { ...deletedTlsCertAuth?.[0], orgId: identityMembershipOrg.scopeOrgId };
     });
+
+    // Detaching the auth method must invalidate any tokens already issued
+    // through it; without this, leaked tokens authenticate up to MAX_AGE
+    // even after the admin pulled the auth method.
+    await identityAccessTokenService.revokeAllTokensForIdentity(identityId);
+
     return revokedIdentityTlsCertAuth;
   };
 

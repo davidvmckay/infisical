@@ -2,7 +2,10 @@ export enum CaType {
   INTERNAL = "internal",
   ACME = "acme",
   AZURE_AD_CS = "azure-ad-cs",
-  AWS_PCA = "aws-pca"
+  AWS_PCA = "aws-pca",
+  DIGICERT = "digicert",
+  AWS_ACM_PUBLIC_CA = "aws-acm-public-ca",
+  VENAFI_TPP = "venafi-tpp"
 }
 
 export enum InternalCaType {
@@ -27,8 +30,21 @@ export enum AcmeDnsProvider {
   AzureDNS = "azure-dns"
 }
 
+export enum CaRenewalStatus {
+  PENDING = "pending",
+  SUCCESS = "success",
+  FAILED = "failed"
+}
+
 export enum CaCapability {
   ISSUE_CERTIFICATES = "issue-certificates",
   REVOKE_CERTIFICATES = "revoke-certificates",
   RENEW_CERTIFICATES = "renew-certificates"
+}
+
+export enum CaSigningConfigType {
+  INTERNAL = "internal",
+  MANUAL = "manual",
+  VENAFI = "venafi",
+  AZURE_ADCS = "azure-ad-cs"
 }

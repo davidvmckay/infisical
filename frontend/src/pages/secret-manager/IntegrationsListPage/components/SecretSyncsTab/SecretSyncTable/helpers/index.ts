@@ -10,6 +10,7 @@ import { GitLabSyncScope } from "@app/hooks/api/secretSyncs/types/gitlab-sync";
 import { HumanitecSyncScope } from "@app/hooks/api/secretSyncs/types/humanitec-sync";
 import { OctopusDeploySyncScope } from "@app/hooks/api/secretSyncs/types/octopus-deploy-sync";
 import { RenderSyncScope } from "@app/hooks/api/secretSyncs/types/render-sync";
+import { VercelSyncScope } from "@app/hooks/api/secretSyncs/types/vercel-sync";
 
 // This functional ensures parity across what is displayed in the destination column
 // and the values used when search filtering
@@ -93,8 +94,19 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
       secondaryText = "Cluster";
       break;
     case SecretSync.Vercel:
-      primaryText = destinationConfig.appName || destinationConfig.app;
-      secondaryText = destinationConfig.env;
+      if (destinationConfig.scope === VercelSyncScope.Team) {
+        primaryText = destinationConfig.teamName || destinationConfig.teamId;
+        const envLabels = destinationConfig.targetEnvironments.map(
+          (env) => env.charAt(0).toUpperCase() + env.slice(1)
+        );
+        if (destinationConfig.applyToAllCustomEnvironments) {
+          envLabels.push("All Custom Environments");
+        }
+        secondaryText = envLabels.join(", ") || "All Custom Environments";
+      } else {
+        primaryText = destinationConfig.appName || destinationConfig.app;
+        secondaryText = destinationConfig.env;
+      }
       break;
     case SecretSync.Windmill:
       primaryText = destinationConfig.workspace;
@@ -217,6 +229,37 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
     case SecretSync.CircleCI:
       primaryText = destinationConfig.projectName;
       secondaryText = "Project";
+      break;
+    case SecretSync.AzureEntraIdScim:
+      primaryText =
+        destinationConfig.servicePrincipalDisplayName || destinationConfig.servicePrincipalId;
+      secondaryText = "SCIM Service Principal";
+      break;
+    case SecretSync.ExternalInfisical:
+      primaryText = destinationConfig.projectId;
+      secondaryText = `${destinationConfig.environment} - ${destinationConfig.secretPath}`;
+      break;
+    case SecretSync.OVH:
+      primaryText = destinationConfig.path;
+      secondaryText = "OVH Secret Manager";
+      break;
+    case SecretSync.Devin:
+      primaryText = destinationConfig.orgId;
+      secondaryText = "Organization";
+      break;
+    case SecretSync.Ona:
+      primaryText = destinationConfig.projectName || destinationConfig.projectId;
+      secondaryText = "Ona Project";
+      break;
+    case SecretSync.TravisCI:
+      primaryText = destinationConfig.repositorySlug;
+      secondaryText = destinationConfig.branch
+        ? `Branch - ${destinationConfig.branch}`
+        : "Repository";
+      break;
+    case SecretSync.Snowflake:
+      primaryText = destinationConfig.database;
+      secondaryText = `Schema - ${destinationConfig.schema}`;
       break;
     default:
       throw new Error(`Unhandled Destination Col Values ${destination}`);

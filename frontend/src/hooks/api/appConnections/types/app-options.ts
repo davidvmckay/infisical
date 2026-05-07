@@ -45,6 +45,10 @@ export type TDatabricksConnectionOption = TAppConnectionOptionBase & {
   app: AppConnection.Databricks;
 };
 
+export type TAzureEntraIdConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.AzureEntraId;
+};
+
 export type TAzureDevOpsConnectionOption = TAppConnectionOptionBase & {
   app: AppConnection.AzureDevOps;
   oauthClientId?: string;
@@ -220,6 +224,52 @@ export type TCircleCISyncConnectionOption = TAppConnectionOptionBase & {
   app: AppConnection.CircleCI;
 };
 
+export type TVenafiConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Venafi;
+};
+
+export type TVenafiTppConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.VenafiTpp;
+};
+
+export type TExternalInfisicalConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.ExternalInfisical;
+};
+
+export type TDopplerConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Doppler;
+};
+export type TNetScalerConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.NetScaler;
+};
+
+export type TAnthropicConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Anthropic;
+};
+
+export type TOvhConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.OVH;
+};
+export type TDevinConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Devin;
+};
+
+export type TOnaConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Ona;
+};
+
+export type TDigiCertConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.DigiCert;
+};
+
+export type TTravisCIConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.TravisCI;
+};
+
+export type TSnowflakeConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Snowflake;
+};
+
 export type TAppConnectionOption =
   | TAwsConnectionOption
   | TGitHubConnectionOption
@@ -271,7 +321,20 @@ export type TAppConnectionOption =
   | TOctopusDeployConnectionOption
   | TSshConnectionOption
   | TDbtConnectionOption
-  | TSmbConnectionOption;
+  | TSmbConnectionOption
+  | TAzureEntraIdConnectionOption
+  | TVenafiConnectionOption
+  | TVenafiTppConnectionOption
+  | TExternalInfisicalConnectionOption
+  | TDopplerConnectionOption
+  | TNetScalerConnectionOption
+  | TAnthropicConnectionOption
+  | TOvhConnectionOption
+  | TDevinConnectionOption
+  | TOnaConnectionOption
+  | TDigiCertConnectionOption
+  | TTravisCIConnectionOption
+  | TSnowflakeConnectionOption;
 
 export type TAppConnectionOptionMap = {
   [AppConnection.AWS]: TAwsConnectionOption;
@@ -325,4 +388,17 @@ export type TAppConnectionOptionMap = {
   [AppConnection.Dbt]: TDbtConnectionOption;
   [AppConnection.SMB]: TSmbConnectionOption;
   [AppConnection.CircleCI]: TCircleCISyncConnectionOption;
+  [AppConnection.AzureEntraId]: TAzureEntraIdConnectionOption;
+  [AppConnection.Venafi]: TVenafiConnectionOption;
+  [AppConnection.VenafiTpp]: TVenafiTppConnectionOption;
+  [AppConnection.ExternalInfisical]: TExternalInfisicalConnectionOption;
+  [AppConnection.Doppler]: TDopplerConnectionOption;
+  [AppConnection.NetScaler]: TNetScalerConnectionOption;
+  [AppConnection.Anthropic]: TAnthropicConnectionOption;
+  [AppConnection.OVH]: TOvhConnectionOption;
+  [AppConnection.Devin]: TDevinConnectionOption;
+  [AppConnection.Ona]: TOnaConnectionOption;
+  [AppConnection.DigiCert]: TDigiCertConnectionOption;
+  [AppConnection.TravisCI]: TTravisCIConnectionOption;
+  [AppConnection.Snowflake]: TSnowflakeConnectionOption;
 };

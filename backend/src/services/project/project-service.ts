@@ -40,7 +40,8 @@ import { TSshCertificateDALFactory } from "@app/ee/services/ssh-certificate/ssh-
 import { TSshCertificateTemplateDALFactory } from "@app/ee/services/ssh-certificate-template/ssh-certificate-template-dal";
 import { TSshHostDALFactory } from "@app/ee/services/ssh-host/ssh-host-dal";
 import { TSshHostGroupDALFactory } from "@app/ee/services/ssh-host-group/ssh-host-group-dal";
-import { KeyStorePrefixes, PgSqlLock, TKeyStoreFactory } from "@app/keystore/keystore";
+import { KeyStorePrefixes, KeyStoreTtls, PgSqlLock, TKeyStoreFactory } from "@app/keystore/keystore";
+import { withCache } from "@app/lib/cache/with-cache";
 import { getProcessedPermissionRules } from "@app/lib/casl/permission-filter-utils";
 import { getConfig } from "@app/lib/config/env";
 import { crypto } from "@app/lib/crypto/cryptography";
@@ -48,6 +49,8 @@ import { DatabaseErrorCode } from "@app/lib/error-codes";
 import { BadRequestError, DatabaseError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
 import { groupBy } from "@app/lib/fn";
 import { alphaNumericNanoId } from "@app/lib/nanoid";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { TProjectPermission } from "@app/lib/types";
 import { TPkiSubscriberDALFactory } from "@app/services/pki-subscriber/pki-subscriber-dal";
 
@@ -91,6 +94,8 @@ import {
   TCreateProjectDTO,
   TDeleteProjectDTO,
   TDeleteProjectWorkflowIntegration,
+  TGetActivityTrendDTO,
+  TGetDashboardStatsDTO,
   TGetProjectDTO,
   TGetProjectKmsKey,
   TGetProjectSshConfig,
@@ -162,6 +167,9 @@ type TProjectServiceFactoryDep = {
     | "findWithPrivateKeyInfo"
     | "findActiveCertificatesForSync"
     | "countActiveCertificatesForSync"
+    | "getDashboardStats"
+    | "getActivityTrend"
+    | "getPqcTrend"
   >;
   certificateTemplateDAL: Pick<TCertificateTemplateDALFactory, "getCertTemplatesByProjectId">;
   pkiAlertDAL: Pick<TPkiAlertDALFactory, "find">;
@@ -176,7 +184,7 @@ type TProjectServiceFactoryDep = {
   licenseService: Pick<TLicenseServiceFactory, "getPlan" | "invalidateGetPlan">;
   smtpService: Pick<TSmtpService, "sendMail">;
   orgDAL: Pick<TOrgDALFactory, "findOne" | "findEffectiveOrgMembership">;
-  keyStore: Pick<TKeyStoreFactory, "deleteItem" | "acquireLock">;
+  keyStore: Pick<TKeyStoreFactory, "deleteItem" | "acquireLock" | "getItem" | "setItemWithExpiry">;
   roleDAL: Pick<TRoleDALFactory, "find" | "insertMany" | "delete">;
   kmsService: Pick<
     TKmsServiceFactory,
@@ -267,6 +275,10 @@ export const projectServiceFactory = ({
       permission.cannot(OrgPermissionActions.Create, OrgPermissionSubjects.Project)
     ) {
       throw new ForbiddenRequestError({ message: "You don't have permission to create a project" });
+    }
+
+    if (type === ProjectType.AI) {
+      throw new BadRequestError({ message: "Agent Sentinel projects are not supported" });
     }
 
     const results = await (trx || projectDAL).transaction(async (tx) => {
@@ -717,7 +729,7 @@ export const projectServiceFactory = ({
       };
     });
 
-    await keyStore.deleteItem(`infisical-cloud-plan-${actorOrgId}`);
+    await keyStore.deleteItem(KeyStorePrefixes.LicenseCloudPlan(actorOrgId));
     return results;
   };
 
@@ -791,7 +803,7 @@ export const projectServiceFactory = ({
         return delProject;
       });
 
-      await keyStore.deleteItem(`infisical-cloud-plan-${actorOrgId}`);
+      await keyStore.deleteItem(KeyStorePrefixes.LicenseCloudPlan(actorOrgId));
       return deletedProject;
     } finally {
       await lock.release();
@@ -1211,6 +1223,19 @@ export const projectServiceFactory = ({
     fromDate,
     toDate,
     metadataFilter,
+    extendedKeyUsage,
+    keyAlgorithm,
+    signatureAlgorithm,
+    keySizes,
+    caIds,
+    enrollmentTypes,
+    source,
+    notAfterFrom,
+    notAfterTo,
+    notBeforeFrom,
+    notBeforeTo,
+    sortBy,
+    sortOrder,
     actorId,
     actorOrgId,
     actorAuthMethod,
@@ -1239,17 +1264,42 @@ export const projectServiceFactory = ({
       ...(friendlyName && { friendlyName }),
       ...(commonName && { commonName }),
       ...(search && { search }),
-      ...(status && { status: Array.isArray(status) ? status[0] : status }),
+      ...(status && {
+        status: Array.isArray(status) ? status : status.split(",").map((s) => s.trim())
+      }),
       ...(profileIds && { profileIds }),
       ...(fromDate && { fromDate }),
       ...(toDate && { toDate }),
-      ...(metadataFilter && { metadataFilter })
+      ...(metadataFilter && { metadataFilter }),
+      ...(extendedKeyUsage && { extendedKeyUsage }),
+      ...(keyAlgorithm && { keyAlgorithm }),
+      ...(signatureAlgorithm && { signatureAlgorithm }),
+      ...(keySizes && keySizes.length > 0 && { keySizes }),
+      ...(caIds && { caIds }),
+      ...(enrollmentTypes && { enrollmentTypes }),
+      ...(source && { source }),
+      ...(notAfterFrom && { notAfterFrom }),
+      ...(notAfterTo && { notAfterTo }),
+      ...(notBeforeFrom && { notBeforeFrom }),
+      ...(notBeforeTo && { notBeforeTo })
     };
     const permissionFilters = getProcessedPermissionRules(
       permission,
       ProjectPermissionCertificateActions.Read,
       ProjectPermissionSub.Certificates
     );
+
+    const ALLOWED_SORT_COLUMNS = new Set([
+      "notAfter",
+      "notBefore",
+      "createdAt",
+      "commonName",
+      "serialNumber",
+      "keyAlgorithm",
+      "status"
+    ]);
+    const validatedSortBy = sortBy && ALLOWED_SORT_COLUMNS.has(sortBy) ? sortBy : "notAfter";
+    const validatedSortOrder = sortOrder === "asc" ? "asc" : "desc";
 
     const certificates = forPkiSync
       ? await certificateDAL.findActiveCertificatesForSync(regularFilters, { offset, limit }, permissionFilters)
@@ -1258,7 +1308,7 @@ export const projectServiceFactory = ({
           {
             offset,
             limit,
-            sort: [["notAfter", "desc"]]
+            sort: [[validatedSortBy, validatedSortOrder]]
           },
           permissionFilters
         );
@@ -1268,21 +1318,130 @@ export const projectServiceFactory = ({
       ...(regularFilters.friendlyName && { friendlyName: String(regularFilters.friendlyName) }),
       ...(regularFilters.commonName && { commonName: String(regularFilters.commonName) }),
       ...(regularFilters.search && { search: String(regularFilters.search) }),
-      ...(regularFilters.status && { status: String(regularFilters.status) }),
+      ...(regularFilters.status && { status: regularFilters.status }),
       ...(regularFilters.profileIds && { profileIds: regularFilters.profileIds }),
       ...(regularFilters.fromDate && { fromDate: regularFilters.fromDate }),
       ...(regularFilters.toDate && { toDate: regularFilters.toDate }),
-      ...(regularFilters.metadataFilter && { metadataFilter: regularFilters.metadataFilter })
+      ...(regularFilters.metadataFilter && { metadataFilter: regularFilters.metadataFilter }),
+      ...(regularFilters.extendedKeyUsage && { extendedKeyUsage: String(regularFilters.extendedKeyUsage) }),
+      ...(regularFilters.keyAlgorithm && { keyAlgorithm: regularFilters.keyAlgorithm }),
+      ...(regularFilters.signatureAlgorithm && { signatureAlgorithm: String(regularFilters.signatureAlgorithm) }),
+      ...(regularFilters.keySizes && { keySizes: regularFilters.keySizes }),
+      ...(regularFilters.caIds && { caIds: regularFilters.caIds }),
+      ...(regularFilters.enrollmentTypes && { enrollmentTypes: regularFilters.enrollmentTypes }),
+      ...(regularFilters.source && { source: regularFilters.source }),
+      ...(regularFilters.notAfterFrom && { notAfterFrom: regularFilters.notAfterFrom }),
+      ...(regularFilters.notAfterTo && { notAfterTo: regularFilters.notAfterTo }),
+      ...(regularFilters.notBeforeFrom && { notBeforeFrom: regularFilters.notBeforeFrom }),
+      ...(regularFilters.notBeforeTo && { notBeforeTo: regularFilters.notBeforeTo })
     };
 
     const count = forPkiSync
       ? await certificateDAL.countActiveCertificatesForSync(countFilter)
-      : await certificateDAL.countCertificatesInProject(countFilter);
+      : await certificateDAL.countCertificatesInProject(countFilter, permissionFilters);
 
     return {
       certificates,
       totalCount: count
     };
+  };
+
+  const getDashboardStats = async ({ filter, actorId, actorOrgId, actorAuthMethod, actor }: TGetDashboardStatsDTO) => {
+    const project = await projectDAL.findProjectByFilter(filter);
+    const projectId = project.id;
+
+    const { permission } = await permissionService.getProjectPermission({
+      actor,
+      actorId,
+      projectId,
+      actorAuthMethod,
+      actorOrgId,
+      actionProjectType: ActionProjectType.CertificateManager
+    });
+
+    ForbiddenError.from(permission).throwUnlessCan(
+      ProjectPermissionCertificateActions.Read,
+      ProjectPermissionSub.Certificates
+    );
+
+    return withCache({
+      keyStore,
+      key: KeyStorePrefixes.CertDashboardStats(projectId),
+      ttlSeconds: KeyStoreTtls.DashboardCacheInSeconds,
+      fetcher: () => certificateDAL.getDashboardStats(projectId)
+    });
+  };
+
+  const getActivityTrend = async ({
+    filter,
+    range = "30d",
+    actorId,
+    actorOrgId,
+    actorAuthMethod,
+    actor
+  }: TGetActivityTrendDTO) => {
+    const project = await projectDAL.findProjectByFilter(filter);
+    const projectId = project.id;
+
+    const { permission } = await permissionService.getProjectPermission({
+      actor,
+      actorId,
+      projectId,
+      actorAuthMethod,
+      actorOrgId,
+      actionProjectType: ActionProjectType.CertificateManager
+    });
+
+    ForbiddenError.from(permission).throwUnlessCan(
+      ProjectPermissionCertificateActions.Read,
+      ProjectPermissionSub.Certificates
+    );
+
+    const rangeDaysMap: Record<string, number> = { "7d": 7, "30d": 30, "6m": 180 };
+    const daysBack = rangeDaysMap[range];
+
+    return withCache({
+      keyStore,
+      key: KeyStorePrefixes.CertActivityTrend(projectId, range),
+      ttlSeconds: KeyStoreTtls.DashboardCacheInSeconds,
+      fetcher: () => certificateDAL.getActivityTrend(projectId, daysBack)
+    });
+  };
+
+  const getPqcTrend = async ({
+    filter,
+    range = "30d",
+    actorId,
+    actorOrgId,
+    actorAuthMethod,
+    actor
+  }: TGetActivityTrendDTO) => {
+    const project = await projectDAL.findProjectByFilter(filter);
+    const projectId = project.id;
+
+    const { permission } = await permissionService.getProjectPermission({
+      actor,
+      actorId,
+      projectId,
+      actorAuthMethod,
+      actorOrgId,
+      actionProjectType: ActionProjectType.CertificateManager
+    });
+
+    ForbiddenError.from(permission).throwUnlessCan(
+      ProjectPermissionCertificateActions.Read,
+      ProjectPermissionSub.Certificates
+    );
+
+    const rangeDaysMap: Record<string, number> = { "7d": 7, "30d": 30, "6m": 180 };
+    const daysBack = rangeDaysMap[range];
+
+    return withCache({
+      keyStore,
+      key: KeyStorePrefixes.CertPqcTrend(projectId, range),
+      ttlSeconds: KeyStoreTtls.DashboardCacheInSeconds,
+      fetcher: () => certificateDAL.getPqcTrend(projectId, daysBack)
+    });
   };
 
   /**
@@ -1700,13 +1859,6 @@ export const projectServiceFactory = ({
     actorAuthMethod,
     projectId
   }: TGetProjectSshConfig) => {
-    const project = await projectDAL.findById(projectId);
-    if (!project) {
-      throw new NotFoundError({
-        message: `Project with ID '${projectId}' not found`
-      });
-    }
-
     const { permission } = await permissionService.getProjectPermission({
       actor,
       actorId,
@@ -1719,12 +1871,12 @@ export const projectServiceFactory = ({
     ForbiddenError.from(permission).throwUnlessCan(ProjectPermissionActions.Read, ProjectPermissionSub.Settings);
 
     const projectSshConfig = await projectSshConfigDAL.findOne({
-      projectId: project.id
+      projectId
     });
 
     if (!projectSshConfig) {
       throw new NotFoundError({
-        message: `Project SSH config with ID '${project.id}' not found`
+        message: `Project SSH config with ID '${projectId}' not found`
       });
     }
 
@@ -1740,13 +1892,6 @@ export const projectServiceFactory = ({
     defaultUserSshCaId,
     defaultHostSshCaId
   }: TUpdateProjectSshConfig) => {
-    const project = await projectDAL.findById(projectId);
-    if (!project) {
-      throw new NotFoundError({
-        message: `Project with ID '${projectId}' not found`
-      });
-    }
-
     const { permission } = await permissionService.getProjectPermission({
       actor,
       actorId,
@@ -1759,12 +1904,12 @@ export const projectServiceFactory = ({
     ForbiddenError.from(permission).throwUnlessCan(ProjectPermissionActions.Edit, ProjectPermissionSub.Settings);
 
     let projectSshConfig = await projectSshConfigDAL.findOne({
-      projectId: project.id
+      projectId
     });
 
     if (!projectSshConfig) {
       throw new NotFoundError({
-        message: `Project SSH config with ID '${project.id}' not found`
+        message: `Project SSH config with ID '${projectId}' not found`
       });
     }
 
@@ -1773,7 +1918,7 @@ export const projectServiceFactory = ({
         const userSshCa = await sshCertificateAuthorityDAL.findOne(
           {
             id: defaultUserSshCaId,
-            projectId: project.id
+            projectId
           },
           tx
         );
@@ -1789,7 +1934,7 @@ export const projectServiceFactory = ({
         const hostSshCa = await sshCertificateAuthorityDAL.findOne(
           {
             id: defaultHostSshCaId,
-            projectId: project.id
+            projectId
           },
           tx
         );
@@ -1824,13 +1969,6 @@ export const projectServiceFactory = ({
     projectId,
     integration
   }: TGetProjectWorkflowIntegrationConfig) => {
-    const project = await projectDAL.findById(projectId);
-    if (!project) {
-      throw new NotFoundError({
-        message: `Project with ID '${projectId}' not found`
-      });
-    }
-
     const { permission } = await permissionService.getProjectPermission({
       actor,
       actorId,
@@ -1844,7 +1982,7 @@ export const projectServiceFactory = ({
 
     if (integration === WorkflowIntegration.SLACK) {
       const config = await projectSlackConfigDAL.findOne({
-        projectId: project.id
+        projectId
       });
 
       if (!config) {
@@ -1862,7 +2000,7 @@ export const projectServiceFactory = ({
 
     if (integration === WorkflowIntegration.MICROSOFT_TEAMS) {
       const config = await projectMicrosoftTeamsConfigDAL.findOne({
-        projectId: project.id
+        projectId
       });
 
       if (!config) {
@@ -1902,7 +2040,9 @@ export const projectServiceFactory = ({
     isSecretSyncErrorNotificationEnabled?: boolean;
     secretSyncErrorChannels?: string;
   }) => {
-    const project = await projectDAL.findById(projectId);
+    const project = await requestMemoize(requestMemoKeys.projectFindById(projectId), () =>
+      projectDAL.findById(projectId)
+    );
     if (!project) {
       throw new NotFoundError({
         message: `Project with ID '${projectId}' not found`
@@ -2111,13 +2251,6 @@ export const projectServiceFactory = ({
     integrationId,
     integration
   }: TDeleteProjectWorkflowIntegration) => {
-    const project = await projectDAL.findById(projectId);
-    if (!project) {
-      throw new NotFoundError({
-        message: `Project with ID '${projectId}' not found`
-      });
-    }
-
     const { permission } = await permissionService.getProjectPermission({
       actor,
       actorId,
@@ -2259,7 +2392,9 @@ export const projectServiceFactory = ({
     }
 
     const org = await orgDAL.findOne({ id: permission.orgId });
-    const project = await projectDAL.findById(projectId);
+    const project = await requestMemoize(requestMemoKeys.projectFindById(projectId), () =>
+      projectDAL.findById(projectId)
+    );
     const userDetails = await userDAL.findById(permission.id);
     const appCfg = getConfig();
 
@@ -2313,6 +2448,9 @@ export const projectServiceFactory = ({
     upgradeProject,
     listProjectCas,
     listProjectCertificates,
+    getDashboardStats,
+    getActivityTrend,
+    getPqcTrend,
     listProjectAlerts,
     listProjectPkiCollections,
     listProjectCertificateTemplates,

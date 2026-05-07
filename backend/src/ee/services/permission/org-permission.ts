@@ -36,7 +36,8 @@ export enum OrgPermissionAppConnectionActions {
   Create = "create",
   Edit = "edit",
   Delete = "delete",
-  Connect = "connect"
+  Connect = "connect",
+  RotateCredentials = "rotate-credentials"
 }
 
 export enum OrgPermissionAuditLogsActions {
@@ -70,7 +71,16 @@ export enum OrgPermissionGatewayActions {
   ListGateways = "list-gateways",
   EditGateways = "edit-gateways",
   DeleteGateways = "delete-gateways",
-  AttachGateways = "attach-gateways"
+  AttachGateways = "attach-gateways",
+  RevokeGatewayAccess = "revoke-gateway-access"
+}
+
+export enum OrgPermissionGatewayPoolActions {
+  CreateGatewayPools = "create-gateway-pools",
+  ListGatewayPools = "list-gateway-pools",
+  EditGatewayPools = "edit-gateway-pools",
+  DeleteGatewayPools = "delete-gateway-pools",
+  AttachGatewayPools = "attach-gateway-pools"
 }
 
 export enum OrgPermissionRelayActions {
@@ -109,6 +119,17 @@ export enum OrgPermissionBillingActions {
   ManageBilling = "manage-billing"
 }
 
+export enum OrgPermissionEmailDomainActions {
+  Read = "read",
+  Create = "create",
+  VerifyDomain = "verify-domain",
+  Delete = "delete"
+}
+
+export enum OrgPermissionHoneyTokenActions {
+  Setup = "setup"
+}
+
 export enum OrgPermissionSubjects {
   Workspace = "workspace",
   Project = "project",
@@ -133,9 +154,12 @@ export enum OrgPermissionSubjects {
   AppConnections = "app-connections",
   Kmip = "kmip",
   Gateway = "gateway",
+  GatewayPool = "gateway-pool",
   Relay = "relay",
   SecretShare = "secret-share",
-  SubOrganization = "sub-organization"
+  SubOrganization = "sub-organization",
+  EmailDomains = "email-domains",
+  HoneyTokens = "honey-tokens"
 }
 
 export type AppConnectionSubjectFields = {
@@ -163,6 +187,7 @@ export type OrgPermissionSet =
   | [OrgPermissionAuditLogsActions, OrgPermissionSubjects.AuditLogs]
   | [OrgPermissionActions, OrgPermissionSubjects.ProjectTemplates]
   | [OrgPermissionGatewayActions, OrgPermissionSubjects.Gateway]
+  | [OrgPermissionGatewayPoolActions, OrgPermissionSubjects.GatewayPool]
   | [OrgPermissionRelayActions, OrgPermissionSubjects.Relay]
   | [
       OrgPermissionAppConnectionActions,
@@ -174,7 +199,9 @@ export type OrgPermissionSet =
   | [OrgPermissionAdminConsoleAction, OrgPermissionSubjects.AdminConsole]
   | [OrgPermissionMachineIdentityAuthTemplateActions, OrgPermissionSubjects.MachineIdentityAuthTemplate]
   | [OrgPermissionKmipActions, OrgPermissionSubjects.Kmip]
-  | [OrgPermissionSecretShareAction, OrgPermissionSubjects.SecretShare];
+  | [OrgPermissionSecretShareAction, OrgPermissionSubjects.SecretShare]
+  | [OrgPermissionEmailDomainActions, OrgPermissionSubjects.EmailDomains]
+  | [OrgPermissionHoneyTokenActions, OrgPermissionSubjects.HoneyTokens];
 
 const AppConnectionConditionSchema = z
   .object({
@@ -321,8 +348,26 @@ export const OrgPermissionSchema = z.discriminatedUnion("subject", [
     )
   }),
   z.object({
+    subject: z.literal(OrgPermissionSubjects.GatewayPool).describe("The entity this permission pertains to."),
+    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionGatewayPoolActions).describe(
+      "Describe what action an entity can take."
+    )
+  }),
+  z.object({
     subject: z.literal(OrgPermissionSubjects.Relay).describe("The entity this permission pertains to."),
     action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionRelayActions).describe(
+      "Describe what action an entity can take."
+    )
+  }),
+  z.object({
+    subject: z.literal(OrgPermissionSubjects.EmailDomains).describe("The entity this permission pertains to."),
+    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionEmailDomainActions).describe(
+      "Describe what action an entity can take."
+    )
+  }),
+  z.object({
+    subject: z.literal(OrgPermissionSubjects.HoneyTokens).describe("The entity this permission pertains to."),
+    action: CASL_ACTION_SCHEMA_NATIVE_ENUM(OrgPermissionHoneyTokenActions).describe(
       "Describe what action an entity can take."
     )
   })
@@ -432,12 +477,20 @@ const buildAdminPermission = () => {
   can(OrgPermissionAppConnectionActions.Edit, OrgPermissionSubjects.AppConnections);
   can(OrgPermissionAppConnectionActions.Delete, OrgPermissionSubjects.AppConnections);
   can(OrgPermissionAppConnectionActions.Connect, OrgPermissionSubjects.AppConnections);
+  can(OrgPermissionAppConnectionActions.RotateCredentials, OrgPermissionSubjects.AppConnections);
 
   can(OrgPermissionGatewayActions.ListGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.CreateGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.EditGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.DeleteGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.AttachGateways, OrgPermissionSubjects.Gateway);
+  can(OrgPermissionGatewayActions.RevokeGatewayAccess, OrgPermissionSubjects.Gateway);
+
+  can(OrgPermissionGatewayPoolActions.ListGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.CreateGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.EditGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.DeleteGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.AttachGatewayPools, OrgPermissionSubjects.GatewayPool);
 
   can(OrgPermissionRelayActions.ListRelays, OrgPermissionSubjects.Relay);
   can(OrgPermissionRelayActions.CreateRelays, OrgPermissionSubjects.Relay);
@@ -469,6 +522,12 @@ const buildAdminPermission = () => {
   );
 
   can(OrgPermissionSecretShareAction.ManageSettings, OrgPermissionSubjects.SecretShare);
+
+  can(OrgPermissionEmailDomainActions.Read, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.Create, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.VerifyDomain, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionEmailDomainActions.Delete, OrgPermissionSubjects.EmailDomains);
+  can(OrgPermissionHoneyTokenActions.Setup, OrgPermissionSubjects.HoneyTokens);
 
   return rules;
 };
@@ -503,6 +562,10 @@ const buildMemberPermission = () => {
   can(OrgPermissionGatewayActions.ListGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.CreateGateways, OrgPermissionSubjects.Gateway);
   can(OrgPermissionGatewayActions.AttachGateways, OrgPermissionSubjects.Gateway);
+
+  can(OrgPermissionGatewayPoolActions.ListGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.CreateGatewayPools, OrgPermissionSubjects.GatewayPool);
+  can(OrgPermissionGatewayPoolActions.AttachGatewayPools, OrgPermissionSubjects.GatewayPool);
 
   can(OrgPermissionRelayActions.ListRelays, OrgPermissionSubjects.Relay);
   can(OrgPermissionRelayActions.CreateRelays, OrgPermissionSubjects.Relay);

@@ -28,14 +28,18 @@ import {
   PermissionBoundaryError,
   UnauthorizedError
 } from "@app/lib/errors";
-import { extractIPDetails, isValidIpOrCidr } from "@app/lib/ip";
+import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { AuthAttemptAuthMethod, AuthAttemptAuthResult, authAttemptCounter } from "@app/lib/telemetry/metrics";
 import { getValueByDot } from "@app/lib/template/dot-access";
+import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator";
 
-import { ActorType, AuthTokenType } from "../auth/auth-type";
+import { ActorType } from "../auth/auth-type";
 import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TIdentityAccessTokenDALFactory } from "../identity-access-token/identity-access-token-dal";
-import { TIdentityAccessTokenJwtPayload } from "../identity-access-token/identity-access-token-types";
+import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/identity-access-token-service";
 import { TKmsServiceFactory } from "../kms/kms-service";
 import { KmsDataKey } from "../kms/kms-types";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
@@ -56,11 +60,15 @@ type TIdentityJwtAuthServiceFactoryDep = {
   identityDAL: Pick<TIdentityDALFactory, "findById">;
   identityJwtAuthDAL: TIdentityJwtAuthDALFactory;
   membershipIdentityDAL: Pick<TMembershipIdentityDALFactory, "findOne" | "update" | "getIdentityById">;
-  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "create" | "delete">;
+  identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "delete">;
   permissionService: Pick<TPermissionServiceFactory, "getOrgPermission" | "getProjectPermission">;
   licenseService: Pick<TLicenseServiceFactory, "getPlan">;
   kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findOne" | "findEffectiveOrgMembership">;
+  identityAccessTokenService: Pick<
+    TIdentityAccessTokenServiceFactory,
+    "issueIdentityAccessToken" | "revokeAllTokensForIdentity"
+  >;
 };
 
 export type TIdentityJwtAuthServiceFactory = ReturnType<typeof identityJwtAuthServiceFactory>;
@@ -73,7 +81,8 @@ export const identityJwtAuthServiceFactory = ({
   licenseService,
   identityAccessTokenDAL,
   kmsService,
-  orgDAL
+  orgDAL,
+  identityAccessTokenService
 }: TIdentityJwtAuthServiceFactoryDep) => {
   const login = async ({ identityId, jwt: jwtValue, organizationSlug }: TLoginJwtAuthDTO) => {
     const appCfg = getConfig();
@@ -82,10 +91,17 @@ export const identityJwtAuthServiceFactory = ({
       throw new NotFoundError({ message: "JWT auth method not found for identity, did you configure JWT auth?" });
     }
 
-    const identity = await identityDAL.findById(identityJwtAuth.identityId);
-    if (!identity) throw new UnauthorizedError({ message: "Identity not found" });
+    const identity = await requestMemoize(requestMemoKeys.identityFindById(identityJwtAuth.identityId), () =>
+      identityDAL.findById(identityJwtAuth.identityId)
+    );
+    if (!identity)
+      throw new UnauthorizedError({
+        message: "Identity not found"
+      });
 
-    const org = await orgDAL.findById(identity.orgId);
+    const org = await requestMemoize(requestMemoKeys.orgFindById(identity.orgId), () =>
+      orgDAL.findById(identity.orgId)
+    );
     const isSubOrgIdentity = Boolean(org.rootOrgId);
 
     // If the identity is a sub-org identity, then the scope is always the org.id, and if it's a root org identity, then we need to resolve the scope if a organizationSlug is specified
@@ -100,20 +116,30 @@ export const identityJwtAuthServiceFactory = ({
       const decodedToken = crypto.jwt().decode(jwtValue, { complete: true });
       if (!decodedToken) {
         throw new UnauthorizedError({
-          message: "Invalid JWT"
+          message: "Invalid JWT",
+          detail: {
+            reasonCode: "invalid_jwt",
+            identityId: identity.id,
+            orgId: identity.orgId,
+            identityName: identity.name
+          }
         });
       }
 
       let tokenData: Record<string, string | boolean | number> = {};
 
       if (identityJwtAuth.configurationType === JwtConfigurationType.JWKS) {
+        await blockLocalAndPrivateIpAddresses(identityJwtAuth.jwksUrl);
+
         let client: JwksClient;
         if (identityJwtAuth.jwksUrl.includes("https:")) {
           const decryptedJwksCaCert = orgDataKeyDecryptor({
             cipherTextBlob: identityJwtAuth.encryptedJwksCaCert
           }).toString();
 
-          const requestAgent = new https.Agent({ ca: decryptedJwksCaCert, rejectUnauthorized: !!decryptedJwksCaCert });
+          const requestAgent = decryptedJwksCaCert
+            ? new https.Agent({ ca: decryptedJwksCaCert, rejectUnauthorized: true })
+            : undefined;
           client = new JwksClient({
             jwksUri: identityJwtAuth.jwksUrl,
             requestAgent
@@ -132,7 +158,13 @@ export const identityJwtAuthServiceFactory = ({
         } catch (error) {
           if (error instanceof jwt.JsonWebTokenError) {
             throw new UnauthorizedError({
-              message: `Access denied: ${error.message}`
+              message: `Access denied: ${error.message}`,
+              detail: {
+                reasonCode: "jwt_verification_failed",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
 
@@ -158,7 +190,13 @@ export const identityJwtAuthServiceFactory = ({
 
         if (!isMatchAnyKey) {
           throw new UnauthorizedError({
-            message: `Access denied: JWT verification failed with all keys. Errors - ${errors.join("; ")}`
+            message: `Access denied: JWT verification failed with all keys. Errors - ${errors.join("; ")}`,
+            detail: {
+              reasonCode: "jwt_verification_failed",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
         }
       }
@@ -174,7 +212,13 @@ export const identityJwtAuthServiceFactory = ({
       if (identityJwtAuth.boundSubject) {
         if (!tokenData.sub) {
           throw new UnauthorizedError({
-            message: "Access denied: token has no subject field"
+            message: "Access denied: token has no subject field",
+            detail: {
+              reasonCode: "missing_subject",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
         }
 
@@ -188,7 +232,13 @@ export const identityJwtAuthServiceFactory = ({
       if (identityJwtAuth.boundAudiences) {
         if (!tokenData.aud) {
           throw new UnauthorizedError({
-            message: "Access denied: token has no audience field"
+            message: "Access denied: token has no audience field",
+            detail: {
+              reasonCode: "missing_audience",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
         }
 
@@ -198,7 +248,13 @@ export const identityJwtAuthServiceFactory = ({
             .some((policyValue) => doesFieldValueMatchJwtPolicy(tokenData.aud, policyValue))
         ) {
           throw new UnauthorizedError({
-            message: "Access denied: token audience not allowed"
+            message: "Access denied: token audience not allowed",
+            detail: {
+              reasonCode: "audience_not_allowed",
+              identityId: identity.id,
+              orgId: identity.orgId,
+              identityName: identity.name
+            }
           });
         }
       }
@@ -210,20 +266,32 @@ export const identityJwtAuthServiceFactory = ({
 
           if (!value) {
             throw new UnauthorizedError({
-              message: `Access denied: token has no ${claimKey} field`
+              message: `Access denied: token has no ${claimKey} field`,
+              detail: {
+                reasonCode: "missing_claim",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
 
           // handle both single and multi-valued claims
           if (!claimValue.split(", ").some((claimEntry) => doesFieldValueMatchJwtPolicy(value, claimEntry))) {
             throw new UnauthorizedError({
-              message: `Access denied: claim mismatch for field ${claimKey}`
+              message: `Access denied: claim mismatch for field ${claimKey}`,
+              detail: {
+                reasonCode: "claim_mismatch",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
         });
       }
 
-      if (organizationSlug) {
+      if (organizationSlug && org.slug !== organizationSlug) {
         if (!isSubOrgIdentity) {
           const subOrg = await orgDAL.findOne({ rootOrgId: org.id, slug: organizationSlug });
 
@@ -239,7 +307,13 @@ export const identityJwtAuthServiceFactory = ({
 
           if (!subOrgMembership) {
             throw new UnauthorizedError({
-              message: `Identity not authorized to access sub organization ${organizationSlug}`
+              message: `Identity not authorized to access sub organization ${organizationSlug}`,
+              detail: {
+                reasonCode: "sub_org_unauthorized",
+                identityId: identity.id,
+                orgId: identity.orgId,
+                identityName: identity.name
+              }
             });
           }
 
@@ -247,7 +321,7 @@ export const identityJwtAuthServiceFactory = ({
         }
       }
 
-      const identityAccessToken = await identityJwtAuthDAL.transaction(async (tx) => {
+      await identityJwtAuthDAL.transaction(async (tx) => {
         await membershipIdentityDAL.update(
           identity.projectId
             ? {
@@ -267,37 +341,28 @@ export const identityJwtAuthServiceFactory = ({
           },
           tx
         );
-        const newToken = await identityAccessTokenDAL.create(
-          {
-            identityId: identityJwtAuth.identityId,
-            isAccessTokenRevoked: false,
-            accessTokenTTL: identityJwtAuth.accessTokenTTL,
-            accessTokenMaxTTL: identityJwtAuth.accessTokenMaxTTL,
-            accessTokenNumUses: 0,
-            accessTokenNumUsesLimit: identityJwtAuth.accessTokenNumUsesLimit,
-            authMethod: IdentityAuthMethod.JWT_AUTH,
-            subOrganizationId
-          },
-          tx
-        );
-
-        return newToken;
       });
 
-      const accessToken = crypto.jwt().sign(
-        {
-          identityId: identityJwtAuth.identityId,
-          identityAccessTokenId: identityAccessToken.id,
-          authTokenType: AuthTokenType.IDENTITY_ACCESS_TOKEN
-        } as TIdentityAccessTokenJwtPayload,
-        appCfg.AUTH_SECRET,
-        // akhilmhdh: for non-expiry tokens you should not even set the value, including undefined. Even for undefined jsonwebtoken throws error
-        Number(identityAccessToken.accessTokenTTL) === 0
-          ? undefined
-          : {
-              expiresIn: Number(identityAccessToken.accessTokenTTL)
-            }
-      );
+      const subOrgDetails =
+        subOrganizationId && subOrganizationId !== org.id ? await orgDAL.findById(subOrganizationId) : null;
+      const tokenScopeOrg = subOrgDetails ?? org;
+      const tokenRootOrgId = tokenScopeOrg.rootOrgId ?? tokenScopeOrg.id;
+      const tokenParentOrgId = tokenScopeOrg.parentOrgId ?? tokenRootOrgId;
+
+      const { accessToken, identityAccessToken } = await identityAccessTokenService.issueIdentityAccessToken({
+        identityId: identityJwtAuth.identityId,
+        identityName: identity.name,
+        authMethod: IdentityAuthMethod.JWT_AUTH,
+        orgId: tokenScopeOrg.id,
+        rootOrgId: tokenRootOrgId,
+        parentOrgId: tokenParentOrgId,
+        subOrganizationId,
+        accessTokenTTL: Number(identityJwtAuth.accessTokenTTL),
+        accessTokenMaxTTL: Number(identityJwtAuth.accessTokenMaxTTL),
+        accessTokenNumUsesLimit: Number(identityJwtAuth.accessTokenNumUsesLimit),
+        accessTokenPeriod: Number(identityJwtAuth.accessTokenPeriod) || 0,
+        accessTokenTrustedIps: identityJwtAuth.accessTokenTrustedIps as TIp[]
+      });
 
       if (appCfg.OTEL_TELEMETRY_COLLECTION_ENABLED) {
         authAttemptCounter.add(1, {
@@ -307,8 +372,8 @@ export const identityJwtAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.JWT_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.SUCCESS,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
 
@@ -322,8 +387,8 @@ export const identityJwtAuthServiceFactory = ({
           "infisical.organization.name": org.name,
           "infisical.identity.auth_method": AuthAttemptAuthMethod.JWT_AUTH,
           "infisical.identity.auth_result": AuthAttemptAuthResult.FAILURE,
-          "client.address": requestContext.get("ip"),
-          "user_agent.original": requestContext.get("userAgent")
+          "client.address": requestContext.get(RequestContextKey.Ip),
+          "user_agent.original": requestContext.get(RequestContextKey.UserAgent)
         });
       }
       throw error;
@@ -420,6 +485,10 @@ export const identityJwtAuthServiceFactory = ({
         });
       return extractIPDetails(accessTokenTrustedIp.ipAddress);
     });
+
+    if (configurationType === JwtConfigurationType.JWKS && jwksUrl) {
+      await blockLocalAndPrivateIpAddresses(jwksUrl);
+    }
 
     const { encryptor: orgDataKeyEncryptor } = await kmsService.createCipherPairWithDataKey({
       type: KmsDataKey.Organization,
@@ -548,6 +617,10 @@ export const identityJwtAuthServiceFactory = ({
         });
       return extractIPDetails(accessTokenTrustedIp.ipAddress);
     });
+
+    if (jwksUrl) {
+      await blockLocalAndPrivateIpAddresses(jwksUrl);
+    }
 
     const updateQuery: TIdentityJwtAuthsUpdate = {
       boundIssuer,
@@ -721,7 +794,10 @@ export const identityJwtAuthServiceFactory = ({
         actorOrgId
       });
 
-      const { shouldUseNewPrivilegeSystem } = await orgDAL.findById(identityMembershipOrg.scopeOrgId);
+      const { shouldUseNewPrivilegeSystem } = await requestMemoize(
+        requestMemoKeys.orgFindById(identityMembershipOrg.scopeOrgId),
+        () => orgDAL.findById(identityMembershipOrg.scopeOrgId)
+      );
       const permissionBoundary = validatePrivilegeChangeOperation(
         shouldUseNewPrivilegeSystem,
         OrgPermissionIdentityActions.RevokeAuth,
@@ -746,6 +822,11 @@ export const identityJwtAuthServiceFactory = ({
 
       return { ...deletedJwtAuth?.[0], orgId: identityMembershipOrg.scopeOrgId };
     });
+
+    // Detaching the auth method must invalidate any tokens already issued
+    // through it; without this, leaked tokens authenticate up to MAX_AGE
+    // even after the admin pulled the auth method.
+    await identityAccessTokenService.revokeAllTokensForIdentity(identityId);
 
     return revokedIdentityJwtAuth;
   };

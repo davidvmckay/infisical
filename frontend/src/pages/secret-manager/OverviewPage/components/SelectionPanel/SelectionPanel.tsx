@@ -1,10 +1,9 @@
 import { useMemo } from "react";
 import { subject } from "@casl/ability";
-import { FolderInputIcon, TrashIcon } from "lucide-react";
+import { FolderInputIcon, TagsIcon, TrashIcon } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 
 import { createNotification } from "@app/components/notifications";
-import { DeleteActionModal } from "@app/components/v2";
 import { Button, Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
 import {
   ProjectPermissionActions,
@@ -17,7 +16,10 @@ import { ProjectPermissionSecretActions } from "@app/context/ProjectPermissionCo
 import { usePopUp } from "@app/hooks";
 import { useDeleteSecretBatch } from "@app/hooks/api";
 import { ProjectSecretsImportedBy, UsedBySecretSyncs } from "@app/hooks/api/dashboard/types";
+import { TDashboardHoneyToken } from "@app/hooks/api/honeyTokens/types";
+import { ProjectEnv } from "@app/hooks/api/projects/types";
 import { PendingAction } from "@app/hooks/api/secretFolders/types";
+import { TSecretRotationV2 } from "@app/hooks/api/secretRotationsV2";
 import { useCreateCommit } from "@app/hooks/api/secrets/mutations";
 import {
   SecretType,
@@ -25,12 +27,17 @@ import {
   TDeleteSecretBatchDTO,
   TSecretFolder
 } from "@app/hooks/api/types";
-import { MoveSecretsModal } from "@app/pages/secret-manager/OverviewPage/components/SelectionPanel/components";
-import { CollapsibleSecretImports } from "@app/pages/secret-manager/SecretDashboardPage/components/SecretListView/CollapsibleSecretImports";
+import {
+  BulkDeleteDialog,
+  BulkTagDialog,
+  MoveSecretsModal
+} from "@app/pages/secret-manager/OverviewPage/components/SelectionPanel/components";
 
 export enum EntryType {
   FOLDER = "folder",
-  SECRET = "secret"
+  SECRET = "secret",
+  SECRET_ROTATION = "secretRotation",
+  HONEY_TOKEN = "honeyToken"
 }
 
 type Props = {
@@ -39,10 +46,13 @@ type Props = {
   selectedEntries: {
     [EntryType.FOLDER]: Record<string, Record<string, TSecretFolder>>;
     [EntryType.SECRET]: Record<string, Record<string, SecretV3RawSanitized>>;
+    [EntryType.SECRET_ROTATION]: Record<string, Record<string, TSecretRotationV2>>;
+    [EntryType.HONEY_TOKEN]: Record<string, Record<string, TDashboardHoneyToken>>;
   };
   importedBy?: ProjectSecretsImportedBy[] | null;
   usedBySecretSyncs?: UsedBySecretSyncs[];
   secretsToDeleteKeys: string[];
+  visibleEnvs: ProjectEnv[];
 };
 
 export const SelectionPanel = ({
@@ -51,22 +61,31 @@ export const SelectionPanel = ({
   selectedEntries,
   importedBy,
   secretsToDeleteKeys,
-  usedBySecretSyncs = []
+  usedBySecretSyncs = [],
+  visibleEnvs
 }: Props) => {
   const { permission } = useProjectPermission();
   const { subscription } = useSubscription();
 
   const { handlePopUpOpen, handlePopUpToggle, handlePopUpClose, popUp } = usePopUp([
     "bulkDeleteEntries",
-    "bulkMoveSecrets"
+    "bulkMoveSecrets",
+    "bulkTagSecrets"
   ] as const);
 
   const selectedFolderCount = Object.keys(selectedEntries.folder).length;
   const selectedKeysCount = Object.keys(selectedEntries.secret).length;
-  const isRotatedSecretSelected = Object.values(selectedEntries.secret).some((record) =>
-    Object.values(record).some((secret) => secret.isRotatedSecret)
+  const selectedRotationCount = Object.keys(selectedEntries.secretRotation).length;
+  const selectedHoneyTokenCount = Object.keys(selectedEntries.honeyToken).length;
+  const isManagedSecretSelected = Object.values(selectedEntries.secret).some((record) =>
+    Object.values(record).some((secret) => secret.isRotatedSecret || secret.isHoneyTokenSecret)
   );
-  const selectedCount = selectedFolderCount + selectedKeysCount;
+  const isHoneyTokenSelected = Object.values(selectedEntries.secret).some((record) =>
+    Object.values(record).some((secret) => secret.isHoneyTokenSecret)
+  );
+
+  const selectedCount =
+    selectedFolderCount + selectedKeysCount + selectedRotationCount + selectedHoneyTokenCount;
 
   const { currentProject, projectId } = useProject();
   const userAvailableEnvs = currentProject?.environments || [];
@@ -88,6 +107,20 @@ export const SelectionPanel = ({
     )
   );
 
+  const canEditSecretsInAnyEnv = userAvailableEnvs.some((env) =>
+    permission.can(
+      ProjectPermissionSecretActions.Edit,
+      subject(ProjectPermissionSub.Secrets, {
+        environment: env.slug,
+        secretPath,
+        secretName: "*",
+        secretTags: ["*"]
+      })
+    )
+  );
+  const canReadTags = permission.can(ProjectPermissionActions.Read, ProjectPermissionSub.Tags);
+  const isTagActionDisabled = !canEditSecretsInAnyEnv || !canReadTags;
+
   const usedBySecretSyncsFiltered = useMemo(() => {
     if (selectedKeysCount === 0 || usedBySecretSyncs.length === 0) return null;
     const envs = Object.values(selectedEntries.secret).flatMap((entries) => Object.keys(entries));
@@ -96,12 +129,12 @@ export const SelectionPanel = ({
 
   const getDeleteModalTitle = () => {
     if (selectedFolderCount > 0 && selectedKeysCount > 0) {
-      return "Do you want to delete the selected secrets and folders across environments?";
+      return "Do you want to delete the selected secrets and folders across the following environments?";
     }
     if (selectedKeysCount > 0) {
-      return "Do you want to delete the selected secrets across environments?";
+      return "Do you want to delete the selected secrets across the following environments?";
     }
-    return "Do you want to delete the selected folders across environments?";
+    return "Do you want to delete the selected folders across the following environments?";
   };
 
   const getDeleteModalSubTitle = () => {
@@ -116,6 +149,10 @@ export const SelectionPanel = ({
 
   const handleBulkDelete = async () => {
     let processedEntries = 0;
+    let hasApprovalRequest = false;
+    let hasDirectDelete = false;
+    const hasFolders = selectedFolderCount > 0;
+    const hasSecrets = selectedKeysCount > 0;
 
     const promises = userAvailableEnvs.map(async (env) => {
       // additional check: ensure that bulk delete is only executed on envs that user has access to
@@ -140,6 +177,7 @@ export const SelectionPanel = ({
 
         if (folderDeletes.length > 0) {
           processedEntries += folderDeletes.length;
+          hasDirectDelete = true;
           await createCommit({
             projectId,
             environment: env.slug,
@@ -167,7 +205,7 @@ export const SelectionPanel = ({
             })
           );
 
-          if (entry && canDeleteSecret && !entry.isRotatedSecret) {
+          if (entry && canDeleteSecret && !entry.isRotatedSecret && !entry.isHoneyTokenSecret) {
             return [
               ...accum,
               {
@@ -183,12 +221,18 @@ export const SelectionPanel = ({
 
       if (secretsToDelete.length > 0) {
         processedEntries += secretsToDelete.length;
-        await deleteBatchSecretV3({
+        const result = await deleteBatchSecretV3({
           secretPath,
           projectId,
           environment: env.slug,
           secrets: secretsToDelete
         });
+
+        if (result && "approval" in result) {
+          hasApprovalRequest = true;
+        } else {
+          hasDirectDelete = true;
+        }
       }
 
       return {
@@ -199,6 +243,13 @@ export const SelectionPanel = ({
     const results = await Promise.allSettled(promises);
     const areAllEntriesDeleted = results.every((result) => result.status === "fulfilled");
     const areSomeEntriesDeleted = results.some((result) => result.status === "fulfilled");
+
+    let resourceLabel = "secrets";
+    if (hasFolders && hasSecrets) {
+      resourceLabel = "secrets and folders";
+    } else if (hasFolders) {
+      resourceLabel = "folders";
+    }
 
     const failedEnvs = userAvailableEnvs
       .filter(
@@ -217,10 +268,22 @@ export const SelectionPanel = ({
     } else if (areAllEntriesDeleted) {
       handlePopUpClose("bulkDeleteEntries");
       resetSelectedEntries();
-      createNotification({
-        type: "success",
-        text: "Successfully deleted selected secrets and folders"
-      });
+      if (hasDirectDelete && hasApprovalRequest) {
+        createNotification({
+          type: "info",
+          text: `Some ${resourceLabel} were deleted and an approval request was generated for protected environments`
+        });
+      } else if (hasApprovalRequest) {
+        createNotification({
+          type: "info",
+          text: `An approval request has been generated for the selected ${resourceLabel}`
+        });
+      } else {
+        createNotification({
+          type: "success",
+          text: `Successfully deleted selected ${resourceLabel}`
+        });
+      }
     } else if (areSomeEntriesDeleted) {
       createNotification({
         type: "warning",
@@ -229,12 +292,27 @@ export const SelectionPanel = ({
     } else {
       createNotification({
         type: "error",
-        text: "Failed to delete selected secrets and folders"
+        text: `Failed to delete selected ${resourceLabel}`
       });
     }
   };
 
   const areFoldersSelected = Boolean(Object.keys(selectedEntries[EntryType.FOLDER]).length);
+  const areRotationsSelected = selectedRotationCount > 0;
+
+  const isMoveDisabled =
+    areFoldersSelected || isHoneyTokenSelected || Boolean(selectedHoneyTokenCount);
+  let moveDisabledReason = "Moving folders is not supported";
+  if ((!areFoldersSelected && isHoneyTokenSelected) || Boolean(selectedHoneyTokenCount)) {
+    moveDisabledReason = "Moving honey tokens is not supported";
+  }
+
+  const isDeleteDisabled = areRotationsSelected || isManagedSecretSelected;
+  let deleteDisabledReason = "Rotated or honey token secrets cannot be deleted via multi-select";
+  if (areRotationsSelected) {
+    deleteDisabledReason =
+      "Rotations cannot be deleted from this view. Use the delete action on the rotation row instead.";
+  }
 
   return (
     <>
@@ -253,17 +331,29 @@ export const SelectionPanel = ({
           >
             Unselect All
           </button>
-          {isRotatedSecretSelected && (
-            <span className="text-xs text-accent">
-              Rotated Secrets will not be affected by action.
-            </span>
+          {selectedKeysCount > 0 && (
+            <Tooltip open={isTagActionDisabled ? undefined : false}>
+              <TooltipTrigger>
+                <Button
+                  isDisabled={isTagActionDisabled}
+                  variant="project"
+                  className="ml-2"
+                  onClick={() => handlePopUpOpen("bulkTagSecrets")}
+                  size="xs"
+                >
+                  <TagsIcon />
+                  Add Tags
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Access denied</TooltipContent>
+            </Tooltip>
           )}
           {shouldShowDelete && (
             <>
-              <Tooltip open={areFoldersSelected ? undefined : false}>
+              <Tooltip open={isMoveDisabled ? undefined : false}>
                 <TooltipTrigger>
                   <Button
-                    isDisabled={areFoldersSelected}
+                    isDisabled={isMoveDisabled}
                     variant="project"
                     className="ml-2"
                     onClick={() => handlePopUpOpen("bulkMoveSecrets")}
@@ -273,17 +363,23 @@ export const SelectionPanel = ({
                     Move
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Moving folders is not supported</TooltipContent>
+                <TooltipContent>{moveDisabledReason}</TooltipContent>
               </Tooltip>
-              <Button
-                variant="danger"
-                className="ml-2"
-                onClick={() => handlePopUpOpen("bulkDeleteEntries")}
-                size="xs"
-              >
-                <TrashIcon />
-                Delete
-              </Button>
+              <Tooltip open={isDeleteDisabled ? undefined : false}>
+                <TooltipTrigger>
+                  <Button
+                    isDisabled={isDeleteDisabled}
+                    variant="danger"
+                    className="ml-2"
+                    onClick={() => handlePopUpOpen("bulkDeleteEntries")}
+                    size="xs"
+                  >
+                    <TrashIcon />
+                    Delete
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{deleteDisabledReason}</TooltipContent>
+              </Tooltip>
             </>
           )}
         </div>
@@ -292,29 +388,35 @@ export const SelectionPanel = ({
         isOpen={popUp.bulkMoveSecrets.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("bulkMoveSecrets", isOpen)}
         environments={userAvailableEnvs}
+        visibleEnvs={visibleEnvs}
         projectId={projectId}
         projectSlug={currentProject.slug}
         sourceSecretPath={secretPath}
         secrets={selectedEntries[EntryType.SECRET]}
+        rotations={selectedEntries[EntryType.SECRET_ROTATION]}
         onComplete={resetSelectedEntries}
       />
-      <DeleteActionModal
+      <BulkTagDialog
+        isOpen={popUp.bulkTagSecrets.isOpen}
+        onOpenChange={(isOpen) => handlePopUpToggle("bulkTagSecrets", isOpen)}
+        projectId={projectId}
+        secretPath={secretPath}
+        secrets={selectedEntries[EntryType.SECRET]}
+        environments={userAvailableEnvs}
+        visibleEnvs={visibleEnvs}
+        onComplete={resetSelectedEntries}
+      />
+      <BulkDeleteDialog
         isOpen={popUp.bulkDeleteEntries.isOpen}
-        deleteKey="delete"
+        onOpenChange={(isOpen) => handlePopUpToggle("bulkDeleteEntries", isOpen)}
         title={getDeleteModalTitle()}
         subTitle={getDeleteModalSubTitle()}
-        onChange={(isOpen) => handlePopUpToggle("bulkDeleteEntries", isOpen)}
         onDeleteApproved={handleBulkDelete}
-        formContent={
-          ((usedBySecretSyncsFiltered && usedBySecretSyncsFiltered.length > 0) ||
-            (importedBy && importedBy.some((element) => element.folders.length > 0))) && (
-            <CollapsibleSecretImports
-              importedBy={importedBy || []}
-              secretsToDelete={secretsToDeleteKeys}
-              usedBySecretSyncs={usedBySecretSyncsFiltered}
-            />
-          )
-        }
+        selectedEntries={selectedEntries}
+        visibleEnvs={visibleEnvs}
+        importedBy={importedBy}
+        secretsToDeleteKeys={secretsToDeleteKeys}
+        usedBySecretSyncsFiltered={usedBySecretSyncsFiltered}
       />
     </>
   );

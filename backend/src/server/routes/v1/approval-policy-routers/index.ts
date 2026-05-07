@@ -1,4 +1,5 @@
 import { ApprovalPolicyType } from "@app/services/approval-policy/approval-policy-enums";
+import { BaseCheckPolicyMatchResponseSchema } from "@app/services/approval-policy/approval-policy-schemas";
 import {
   CertRequestPolicyInputsSchema,
   CertRequestPolicySchema,
@@ -9,8 +10,18 @@ import {
   UpdateCertRequestPolicySchema
 } from "@app/services/approval-policy/cert-request/cert-request-policy-schemas";
 import {
+  CodeSigningPolicyInputsSchema,
+  CodeSigningPolicySchema,
+  CodeSigningRequestGrantSchema,
+  CodeSigningRequestSchema,
+  CreateCodeSigningPolicySchema,
+  CreateCodeSigningRequestSchema,
+  UpdateCodeSigningPolicySchema
+} from "@app/services/approval-policy/code-signing/code-signing-policy-schemas";
+import {
   CreatePamAccessPolicySchema,
   CreatePamAccessRequestSchema,
+  PamAccessCheckPolicyMatchResponseSchema,
   PamAccessPolicyInputsSchema,
   PamAccessPolicySchema,
   PamAccessRequestGrantSchema,
@@ -34,7 +45,8 @@ export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Record<
       createRequestSchema: CreatePamAccessRequestSchema,
       requestResponseSchema: PamAccessRequestSchema,
       grantResponseSchema: PamAccessRequestGrantSchema,
-      inputsSchema: PamAccessPolicyInputsSchema
+      inputsSchema: PamAccessPolicyInputsSchema,
+      checkPolicyMatchResponseSchema: PamAccessCheckPolicyMatchResponseSchema
     });
   },
   [ApprovalPolicyType.CertRequest]: async (server: FastifyZodProvider) => {
@@ -47,7 +59,22 @@ export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Record<
       createRequestSchema: CreateCertRequestRequestSchema,
       requestResponseSchema: CertRequestRequestSchema,
       grantResponseSchema: CertRequestRequestGrantSchema,
-      inputsSchema: CertRequestPolicyInputsSchema
+      inputsSchema: CertRequestPolicyInputsSchema,
+      checkPolicyMatchResponseSchema: BaseCheckPolicyMatchResponseSchema
+    });
+  },
+  [ApprovalPolicyType.CertCodeSigning]: async (server: FastifyZodProvider) => {
+    registerApprovalPolicyEndpoints({
+      server,
+      policyType: ApprovalPolicyType.CertCodeSigning,
+      createPolicySchema: CreateCodeSigningPolicySchema,
+      updatePolicySchema: UpdateCodeSigningPolicySchema,
+      policyResponseSchema: CodeSigningPolicySchema,
+      createRequestSchema: CreateCodeSigningRequestSchema,
+      requestResponseSchema: CodeSigningRequestSchema,
+      grantResponseSchema: CodeSigningRequestGrantSchema,
+      inputsSchema: CodeSigningPolicyInputsSchema,
+      checkPolicyMatchResponseSchema: BaseCheckPolicyMatchResponseSchema
     });
   }
 };

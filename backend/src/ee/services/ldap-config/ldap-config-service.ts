@@ -13,10 +13,13 @@ import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
 import { addUsersToGroupByUserIds, removeUsersFromGroupByUserIds } from "@app/ee/services/group/group-fns";
 import { TUserGroupMembershipDALFactory } from "@app/ee/services/group/user-group-membership-dal";
 import { throwOnPlanSeatLimitReached } from "@app/ee/services/license/license-fns";
-import { getConfig } from "@app/lib/config/env";
-import { crypto } from "@app/lib/crypto";
 import { BadRequestError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
-import { AuthMethod, AuthTokenType } from "@app/services/auth/auth-type";
+import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
+import { requestMemoize } from "@app/lib/request-context/request-memoizer";
+import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator";
+import { sanitizeEmail, validateEmail } from "@app/lib/validator/validate-email";
+import { TAuthLoginFactory } from "@app/services/auth/auth-login-service";
+import { AuthMethod } from "@app/services/auth/auth-type";
 import { TAuthTokenServiceFactory } from "@app/services/auth-token/auth-token-service";
 import { TokenType } from "@app/services/auth-token/auth-token-types";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
@@ -31,11 +34,14 @@ import { TProjectKeyDALFactory } from "@app/services/project-key/project-key-dal
 import { SmtpTemplates, TSmtpService } from "@app/services/smtp/smtp-service";
 import { getServerCfg } from "@app/services/super-admin/super-admin-service";
 import { LoginMethod } from "@app/services/super-admin/super-admin-types";
+import { TTelemetryServiceFactory } from "@app/services/telemetry/telemetry-service";
+import { PostHogEventTypes } from "@app/services/telemetry/telemetry-types";
 import { TUserDALFactory } from "@app/services/user/user-dal";
-import { normalizeUsername } from "@app/services/user/user-fns";
 import { TUserAliasDALFactory } from "@app/services/user-alias/user-alias-dal";
 import { UserAliasType } from "@app/services/user-alias/user-alias-types";
 
+import { TEmailDomainDALFactory } from "../email-domain/email-domain-dal";
+import { verifyEmailDomainOwnership } from "../email-domain/email-domain-fns";
 import { TLicenseServiceFactory } from "../license/license-service";
 import { OrgPermissionActions, OrgPermissionSubjects } from "../permission/org-permission";
 import { TPermissionServiceFactory } from "../permission/permission-service-types";
@@ -86,6 +92,9 @@ type TLdapConfigServiceFactoryDep = {
   tokenService: Pick<TAuthTokenServiceFactory, "createTokenForUser">;
   smtpService: Pick<TSmtpService, "sendMail">;
   kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  loginService: Pick<TAuthLoginFactory, "processProviderCallback">;
+  emailDomainDAL: Pick<TEmailDomainDALFactory, "findOne">;
+  telemetryService: Pick<TTelemetryServiceFactory, "sendPostHogEvents">;
 };
 
 export type TLdapConfigServiceFactory = ReturnType<typeof ldapConfigServiceFactory>;
@@ -107,7 +116,10 @@ export const ldapConfigServiceFactory = ({
   licenseService,
   tokenService,
   smtpService,
-  kmsService
+  kmsService,
+  loginService,
+  emailDomainDAL,
+  telemetryService
 }: TLdapConfigServiceFactoryDep) => {
   const createLdapCfg = async ({
     actor,
@@ -130,7 +142,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -143,7 +155,7 @@ export const ldapConfigServiceFactory = ({
           "Failed to create LDAP configuration due to plan restriction. Upgrade plan to create LDAP configuration."
       });
 
-    const org = await orgDAL.findOrgById(orgId);
+    const org = await requestMemoize(requestMemoKeys.orgFindOrgById(orgId), () => orgDAL.findOrgById(orgId));
 
     if (!org) {
       throw new NotFoundError({ message: `Could not find organization with ID "${orgId}"` });
@@ -155,6 +167,8 @@ export const ldapConfigServiceFactory = ({
           "You cannot enable LDAP SSO while Google OAuth is enforced. Disable Google OAuth enforcement to enable LDAP SSO."
       });
     }
+
+    await blockLocalAndPrivateIpAddresses(url);
 
     const { encryptor } = await kmsService.createCipherPairWithDataKey({
       type: KmsDataKey.Organization,
@@ -256,7 +270,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -269,7 +283,7 @@ export const ldapConfigServiceFactory = ({
           "Failed to update LDAP configuration due to plan restriction. Upgrade plan to update LDAP configuration."
       });
 
-    const org = await orgDAL.findOrgById(orgId);
+    const org = await requestMemoize(requestMemoKeys.orgFindOrgById(orgId), () => orgDAL.findOrgById(orgId));
 
     if (!org) {
       throw new NotFoundError({ message: `Could not find organization with ID "${orgId}"` });
@@ -280,6 +294,10 @@ export const ldapConfigServiceFactory = ({
         message:
           "You cannot enable LDAP SSO while Google OAuth is enforced. Disable Google OAuth enforcement to enable LDAP SSO."
       });
+    }
+
+    if (url) {
+      await blockLocalAndPrivateIpAddresses(url);
     }
 
     const updateQuery: TLdapConfigsUpdate = {
@@ -341,7 +359,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -386,15 +404,15 @@ export const ldapConfigServiceFactory = ({
   const ldapLogin = async ({
     ldapConfigId,
     externalId,
-    username,
     firstName,
     lastName,
     email,
     groups,
     orgId,
-    relayState
+    ip,
+    userAgent,
+    callbackPort
   }: TLdapLoginDTO) => {
-    const appCfg = getConfig();
     const serverCfg = await getServerCfg();
 
     if (serverCfg.enabledLoginMethods && !serverCfg.enabledLoginMethods.includes(LoginMethod.LDAP)) {
@@ -403,16 +421,29 @@ export const ldapConfigServiceFactory = ({
       });
     }
 
+    await verifyEmailDomainOwnership({ email, orgId, emailDomainDAL });
+    const sanitizedEmail = sanitizeEmail(email);
+    validateEmail(sanitizedEmail);
+
     let userAlias = await userAliasDAL.findOne({
       externalId,
       orgId,
       aliasType: UserAliasType.LDAP
     });
 
-    const organization = await orgDAL.findOrgById(orgId);
+    const organization = await requestMemoize(requestMemoKeys.orgFindOrgById(orgId), () => orgDAL.findOrgById(orgId));
     if (!organization) throw new NotFoundError({ message: `Organization with ID '${orgId}' not found` });
 
     if (userAlias) {
+      // Verify the existing user's stored email domain + cross-org check
+      const existingUser = await userDAL.findOne({ id: userAlias.userId });
+      if (existingUser) {
+        await verifyEmailDomainOwnership({
+          email: existingUser.username,
+          orgId,
+          emailDomainDAL
+        });
+      }
       await userDAL.transaction(async (tx) => {
         const [orgMembership] = await orgDAL.findMembership(
           {
@@ -430,7 +461,7 @@ export const ldapConfigServiceFactory = ({
               actorUserId: userAlias.userId,
               scopeOrgId: orgId,
               scope: AccessScope.Organization,
-              status: OrgMembershipStatus.Accepted,
+              status: OrgMembershipStatus.Invited,
               isActive: true
             },
             tx
@@ -443,44 +474,20 @@ export const ldapConfigServiceFactory = ({
             },
             tx
           );
-        } else if (orgMembership.status === OrgMembershipStatus.Invited) {
-          await orgDAL.updateMembershipById(
-            orgMembership.id,
-            {
-              status: OrgMembershipStatus.Accepted
-            },
-            tx
-          );
         }
       });
     } else {
+      let isNewUser = false;
       userAlias = await userDAL.transaction(async (tx) => {
         let newUser: TUsers | undefined;
 
-        const usersWithSameEmail = await userDAL.find(
-          {
-            email: email.toLowerCase()
-          },
-          {
-            tx
-          }
-        );
-
-        const verifiedEmail = usersWithSameEmail.find((el) => el.isEmailVerified);
-        const userWithSameUsername = usersWithSameEmail.find((el) => el.username === email.toLowerCase());
-        if (verifiedEmail) {
-          newUser = verifiedEmail;
-        } else if (userWithSameUsername) {
-          newUser = userWithSameUsername;
-        }
+        newUser = await userDAL.findOne({ username: sanitizedEmail }, tx);
 
         if (!newUser) {
-          const uniqueUsername = await normalizeUsername(username, userDAL);
           newUser = await userDAL.create(
             {
-              username: serverCfg.trustLdapEmails ? email.toLowerCase() : uniqueUsername,
-              email: email.toLowerCase(),
-              isEmailVerified: serverCfg.trustLdapEmails,
+              username: sanitizedEmail,
+              email: sanitizedEmail,
               firstName,
               lastName,
               authMethods: [],
@@ -488,17 +495,17 @@ export const ldapConfigServiceFactory = ({
             },
             tx
           );
+          isNewUser = true;
         }
 
         const newUserAlias = await userAliasDAL.create(
           {
             userId: newUser.id,
-            username,
+            username: sanitizedEmail,
             aliasType: UserAliasType.LDAP,
             externalId,
-            emails: [email],
-            orgId,
-            isEmailVerified: serverCfg.trustLdapEmails
+            emails: [sanitizedEmail],
+            orgId
           },
           tx
         );
@@ -521,9 +528,9 @@ export const ldapConfigServiceFactory = ({
               actorUserId: newUser.id,
               scopeOrgId: orgId,
               scope: AccessScope.Organization,
-              status: newUser.isAccepted ? OrgMembershipStatus.Accepted : OrgMembershipStatus.Invited, // if user is fully completed, then set status to accepted, otherwise set it to invited so we can update it later
+              status: OrgMembershipStatus.Invited,
               isActive: true,
-              inviteEmail: email.toLowerCase()
+              inviteEmail: sanitizedEmail
             },
             tx
           );
@@ -536,18 +543,23 @@ export const ldapConfigServiceFactory = ({
             tx
           );
           // Only update the membership to Accepted if the user account is already completed.
-        } else if (orgMembership.status === OrgMembershipStatus.Invited && newUser.isAccepted) {
-          await orgDAL.updateMembershipById(
-            orgMembership.id,
-            {
-              status: OrgMembershipStatus.Accepted
-            },
-            tx
-          );
         }
 
         return newUserAlias;
       });
+
+      if (isNewUser) {
+        void telemetryService.sendPostHogEvents({
+          event: PostHogEventTypes.UserSignedUp,
+          distinctId: sanitizedEmail,
+          organizationId: orgId,
+          properties: {
+            username: sanitizedEmail,
+            email: sanitizedEmail,
+            signupMethod: "ldap"
+          }
+        });
+      }
     }
     await licenseService.updateSubscriptionOrgMemberCount(organization.id);
 
@@ -630,35 +642,6 @@ export const ldapConfigServiceFactory = ({
       return newUser;
     });
 
-    const isUserCompleted = Boolean(user.isAccepted) && userAlias.isEmailVerified;
-    const providerAuthToken = crypto.jwt().sign(
-      {
-        authTokenType: AuthTokenType.PROVIDER_TOKEN,
-        userId: user.id,
-        username: user.username,
-        hasExchangedPrivateKey: true,
-        ...(user.email && { email: user.email, isEmailVerified: userAlias.isEmailVerified }),
-        firstName,
-        lastName,
-        organizationName: organization.name,
-        organizationId: organization.id,
-        organizationSlug: organization.slug,
-        authMethod: AuthMethod.LDAP,
-        authType: UserAliasType.LDAP,
-        aliasId: userAlias.id,
-        isUserCompleted,
-        ...(relayState
-          ? {
-              callbackPort: (JSON.parse(relayState) as { callbackPort: string }).callbackPort
-            }
-          : {})
-      },
-      appCfg.AUTH_SECRET,
-      {
-        expiresIn: appCfg.JWT_PROVIDER_AUTH_LIFETIME
-      }
-    );
-
     if (user.email && !userAlias.isEmailVerified) {
       const token = await tokenService.createTokenForUser({
         type: TokenType.TOKEN_EMAIL_VERIFICATION,
@@ -668,7 +651,7 @@ export const ldapConfigServiceFactory = ({
 
       await smtpService.sendMail({
         template: SmtpTemplates.EmailVerification,
-        subjectLine: "Infisical confirmation code",
+        subjectLine: `Infisical confirmation code: ${token}`,
         recipients: [user.email],
         substitutions: {
           code: token
@@ -676,7 +659,18 @@ export const ldapConfigServiceFactory = ({
       });
     }
 
-    return { isUserCompleted, providerAuthToken };
+    const callbackResult = await loginService.processProviderCallback({
+      user,
+      authMethod: AuthMethod.LDAP,
+      isEmailVerified: Boolean(userAlias.isEmailVerified),
+      aliasId: userAlias.id,
+      ip,
+      userAgent,
+      organizationId: organization.id,
+      callbackPort
+    });
+
+    return callbackResult;
   };
 
   const getLdapGroupMaps = async ({
@@ -691,7 +685,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -727,7 +721,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -788,7 +782,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });
@@ -834,7 +828,7 @@ export const ldapConfigServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization,
       actor,
       actorId,
-      orgId: actorOrgId,
+      orgId,
       actorAuthMethod,
       actorOrgId
     });

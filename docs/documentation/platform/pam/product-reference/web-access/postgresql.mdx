@@ -1,10 +1,12 @@
 ---
 title: "PostgreSQL Web Access"
 sidebarTitle: "PostgreSQL"
-description: "Run SQL queries against PostgreSQL databases directly from your browser."
+description: "Browse, query, and edit PostgreSQL databases directly from your browser."
 ---
 
-The PostgreSQL web access terminal provides a `psql`-like experience in your browser. It is designed for light, ad-hoc usage — quick queries, debugging, and administrative tasks — not as a replacement for a full database client or long-running workloads.
+![PostgreSQL Web Access](/images/pam/product-reference/web-access/pg-data-explorer-overview.png)
+
+PostgreSQL web access provides a unified interface for interacting with your database directly from the browser. It combines visual table browsing and editing with an integrated SQL query runner, all in one interface.
 
 ## Connecting
 
@@ -20,45 +22,54 @@ The PostgreSQL web access terminal provides a `psql`-like experience in your bro
   </Step>
 
   <Step title="Connect in Browser">
-    In the connect modal, click **Connect in Browser** to open the web access terminal.
+    In the connect modal, click **Connect in Browser** to launch the web access interface in a new tab.
 
-    ![Connect in Browser](/images/pam/product-reference/web-access/pg-connect-in-browser.png)
-  </Step>
-
-  <Step title="End Session">
-    Click the **Disconnect** button from the web access terminal status bar or type `\q`, `quit`, or `exit`. You can reconnect from the same page.
+    ![Connect in Browser](/images/pam/product-reference/web-access/pg-data-explorer-connect-button.png)
   </Step>
 </Steps>
 
-![Web Access Terminal](/images/pam/product-reference/web-access/pg-web-access-terminal.png)
+Once connected, you get a spreadsheet-like interface for your database where you can:
 
-## Usage
+- Browse tables and explore their data
+- Filter and sort to quickly find what you need
+- Edit data directly — add, update, or delete rows
+- Export results as CSV or JSON (download or copy to clipboard)
 
-Once connected, you'll see a `=>` prompt. Type SQL queries as you would in `psql`:
+![PostgreSQL Web Access Interface](/images/pam/product-reference/web-access/pg-data-explorer-overview.png)
 
-```sql
-=> SELECT * FROM users LIMIT 5;
- id | name       | email
-----+------------+---------------------
-  1 | Alice      | alice@example.com
-  2 | Bob        | bob@example.com
-(2 rows)
-```
+## Tabs
 
-### Transactions
+The interface uses tabs to keep multiple working contexts open at once. Tabs come in two kinds:
 
-Transactions are fully supported. You can use `BEGIN`, `COMMIT`, and `ROLLBACK` as you would in `psql`:
+- **Table tabs** — opened by clicking a table in the sidebar. Clicking a table that is already open switches to its existing tab. To open a duplicate tab for the same table, right-click the table and choose **Open in new tab**, or hold <kbd>⌘</kbd> / <kbd>Ctrl</kbd> while clicking.
+- **Query tabs** — opened with the **+ New query** button in the tab bar.
 
-```sql
-=> BEGIN;
-BEGIN
-=> UPDATE accounts SET balance = balance - 100 WHERE id = 1;
-UPDATE 1
-=> UPDATE accounts SET balance = balance + 100 WHERE id = 2;
-UPDATE 1
-=> COMMIT;
-COMMIT
-```
+Each tab uses its own database connection, so transactions are scoped to the tab they were opened in.
+
+## SQL Queries
+
+The SQL query runner lets you run arbitrary SQL against your database without leaving the browser.
+
+![SQL Query Runner](/images/pam/product-reference/web-access/pg-sql-query-runner.png)
+
+### Usage
+
+Write your query in the editor and run it by clicking **Run** or pressing `Cmd+Enter` (Mac) / `Ctrl+Enter` (Windows/Linux). Results are displayed in a table below the editor with column types, primary key, and foreign key indicators.
+
+#### Multi-statement queries
+
+If you run multiple statements at once, the results of the last statement are shown, the same behaviour as `psql`.
+
+#### Mutation queries
+
+`INSERT`, `UPDATE`, and `DELETE` statements display the number of affected rows instead of a result table.
+
+## Exporting Data
+
+You can export the currently visible data from both table browse tabs and query result panels. Click the download icon to open the export menu with the following options:
+
+- **Download as CSV / JSON** — saves a file to your machine.
+- **Copy as CSV / JSON** — copies the data to your clipboard.
 
 ## Limits
 
@@ -68,10 +79,18 @@ In addition to the [common session limits](/documentation/platform/pam/product-r
 |---------|-------|
 | **Statement timeout** | 30 seconds per query |
 
+While the browser tab is in the foreground, sessions are kept alive against the [idle timeout](/documentation/platform/pam/product-reference/web-access/overview#session-limits) (10 minutes); the timeout starts counting once the tab becomes hidden. The max session duration still applies regardless.
+
 ## FAQ
 
 <AccordionGroup>
-    <Accordion title="Is this an actual psql session?">
-        No. The web access terminal is not a `psql` client. It is a custom SQL REPL that connects directly to PostgreSQL and provides a `psql`-like experience, including familiar prompts and tabular output formatting. Backslash commands like `\dt` or `\d` are not supported.
+    <Accordion title="Can I edit data for all tables?">
+        Editing is only available for tables that have a primary key defined. Tables without a primary key, as well as views, are displayed in read-only mode.
+    </Accordion>
+    <Accordion title="Does the SQL query runner support transactions?">
+        Yes. You can use `BEGIN`, `COMMIT`, and `ROLLBACK` to manage transactions. The toolbar will show a **Transaction open** indicator while a transaction is in progress.
+    </Accordion>
+    <Accordion title="Can I run only part of a query?">
+        Yes. Select any portion of the SQL in the editor and click **Run Selection** (or press <kbd>⌘ Enter</kbd> / <kbd>Ctrl Enter</kbd>) to execute only the selected text.
     </Accordion>
 </AccordionGroup>

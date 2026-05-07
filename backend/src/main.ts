@@ -20,7 +20,6 @@ import { removeTemporaryBaseDirectory } from "./lib/files";
 import { initLogger } from "./lib/logger";
 import { CustomLogger } from "./lib/logger/logger";
 import { queueServiceFactory } from "./queue";
-import { queueJobsDALFactory } from "./queue/queue-jobs-dal";
 import { main } from "./server/app";
 import { bootstrapCheck } from "./server/boot-strap-check";
 import { kmsRootConfigDALFactory } from "./services/kms/kms-root-config-dal";
@@ -62,6 +61,10 @@ const run = async () => {
   const kmsRootConfigDAL = kmsRootConfigDALFactory(db);
   const envConfig = await initEnvConfig(hsmService, kmsRootConfigDAL, superAdminDAL, logger);
 
+  logger.info(
+    `Running Infisical ${envConfig.INFISICAL_PLATFORM_VERSION ? `v${envConfig.INFISICAL_PLATFORM_VERSION}` : "Development Mode"}`
+  );
+
   const auditLogDb = envConfig.AUDIT_LOGS_DB_CONNECTION_URI
     ? initAuditLogDbConnection({
         dbConnectionUri: envConfig.AUDIT_LOGS_DB_CONNECTION_URI,
@@ -79,8 +82,7 @@ const run = async () => {
 
   const smtp = smtpServiceFactory(formatSmtpConfig());
 
-  const queueJobsDAL = queueJobsDALFactory(db);
-  const queue = queueServiceFactory(envConfig, queueJobsDAL);
+  const queue = queueServiceFactory(envConfig);
 
   const keyValueStoreDAL = keyValueStoreDALFactory(db);
   const keyStore = keyStoreFactory(envConfig, keyValueStoreDAL);
@@ -101,7 +103,6 @@ const run = async () => {
     envConfig
   });
 
-  await queue.initialize();
   const bootstrap = await bootstrapCheck({ db });
 
   // eslint-disable-next-line

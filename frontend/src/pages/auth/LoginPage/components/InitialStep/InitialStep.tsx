@@ -1,46 +1,56 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { faGithub, faGitlab, faGoogle } from "@fortawesome/free-brands-svg-icons";
-import { faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import HCaptcha from "@hcaptcha/react-hcaptcha";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { Eye, EyeOff } from "lucide-react";
+import { z } from "zod";
 
 import Error from "@app/components/basic/Error";
 import { RegionSelect } from "@app/components/navigation/RegionSelect";
 import { createNotification } from "@app/components/notifications";
-import attemptCliLogin from "@app/components/utilities/attemptCliLogin";
 import attemptLogin from "@app/components/utilities/attemptLogin";
-import { Button, Input } from "@app/components/v2";
-import { Badge } from "@app/components/v3";
+import {
+  Badge,
+  Button,
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  IconButton,
+  Input,
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput
+} from "@app/components/v3";
 import { envConfig } from "@app/config/env";
 import { useServerConfig } from "@app/context";
+import { preserveHubSpotUtk } from "@app/helpers/utmTracking";
 import { useFetchServerStatus } from "@app/hooks/api";
 import { LoginMethod } from "@app/hooks/api/admin/types";
 import { AuthMethod } from "@app/hooks/api/users/types";
 import { useLastLogin } from "@app/hooks/useLastLogin";
 
-import { useNavigateToSelectOrganization } from "../../Login.utils";
+import { LoginSection, useNavigateToSelectOrganization } from "../../Login.utils";
 import { OrgLoginButton } from "../OrgLoginButton";
 import { SocialLoginButton } from "../SocialLoginButton";
 
+const loginFormSchema = z.object({
+  email: z.string().email("Please enter a valid email").min(1, "Email is required"),
+  password: z.string().min(1, "Password is required")
+});
+
+type LoginFormData = z.infer<typeof loginFormSchema>;
+
 type Props = {
-  setStep: (step: number) => void;
-  email: string;
-  setEmail: (email: string) => void;
-  password: string;
-  setPassword: (email: string) => void;
+  setSection: (section: LoginSection) => void;
   isAdmin?: boolean;
 };
 
-export const InitialStep = ({
-  setStep,
-  email,
-  setEmail,
-  password,
-  setPassword,
-  isAdmin
-}: Props) => {
+export const InitialStep = ({ setSection, isAdmin }: Props) => {
   const navigate = useNavigate();
 
   const { t } = useTranslation();
@@ -59,16 +69,28 @@ export const InitialStep = ({
 
   const callbackPort = queryParams.get("callback_port");
 
+  const {
+    register,
+    handleSubmit,
+    formState: { errors }
+  } = useForm<LoginFormData>({
+    resolver: zodResolver(loginFormSchema),
+    defaultValues: {
+      email: "",
+      password: ""
+    }
+  });
+
   const redirectToSaml = (orgSlug: string) => {
     const redirectUrl = `/api/v1/sso/redirect/saml2/organizations/${orgSlug}${
-      callbackPort ? `?callback_port=${callbackPort}` : ""
+      callbackPort ? `?callback_port=${encodeURIComponent(callbackPort)}` : ""
     }`;
     window.location.assign(redirectUrl);
   };
 
   const redirectToOidc = (orgSlug: string) => {
     const redirectUrl = `/api/v1/sso/oidc/login?orgSlug=${orgSlug}${
-      callbackPort ? `&callbackPort=${callbackPort}` : ""
+      callbackPort ? `&callbackPort=${encodeURIComponent(callbackPort)}` : ""
     }`;
     window.location.assign(redirectUrl);
   };
@@ -85,7 +107,7 @@ export const InitialStep = ({
       saveLastLogin({ method: LoginMethod.SAML, orgSlug: config.defaultAuthOrgSlug });
       redirectToSaml(config.defaultAuthOrgSlug);
     } else {
-      setStep(2);
+      setSection(LoginSection.SAML);
     }
   };
 
@@ -94,11 +116,12 @@ export const InitialStep = ({
       saveLastLogin({ method: LoginMethod.OIDC, orgSlug: config.defaultAuthOrgSlug });
       redirectToOidc(config.defaultAuthOrgSlug);
     } else {
-      setStep(3);
+      setSection(LoginSection.OIDC);
     }
   };
 
   const handleSocialLogin = (method: LoginMethod) => {
+    preserveHubSpotUtk();
     const searchParams = new URLSearchParams();
     if (callbackPort) {
       searchParams.append("callback_port", callbackPort);
@@ -107,11 +130,8 @@ export const InitialStep = ({
       searchParams.append("is_admin_login", "true");
     }
     const qs = searchParams.toString();
-    const popup = window.open(`/api/v1/sso/redirect/${method}${qs ? `?${qs}` : ""}`);
-    if (popup) {
-      saveLastLogin({ method });
-    }
-    window.close();
+    saveLastLogin({ method });
+    window.location.replace(`/api/v1/sso/redirect/${method}${qs ? `?${qs}` : ""}`);
   };
 
   const isLastUsedMethod = (method: LoginMethod) => lastLogin?.method === method;
@@ -119,256 +139,274 @@ export const InitialStep = ({
   const shouldDisplayLoginMethod = (method: LoginMethod) =>
     isAdmin || !config.enabledLoginMethods || config.enabledLoginMethods.includes(method);
 
-  const handleLogin = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleLoginFailure = () => {
+    setLoginError(true);
+    const errorMessage = callbackPort
+      ? "CLI login unsuccessful. Double-check your credentials and try again."
+      : "Login unsuccessful. Double-check your credentials and try again.";
+
+    createNotification({
+      text: errorMessage,
+      type: "error"
+    });
+  };
+
+  const handleLoginError = (err: any) => {
+    const errorType = err.response?.data?.error;
+    if (errorType === "User Locked") {
+      createNotification({
+        title: err.response.data.error,
+        text: err.response.data.message,
+        type: "error"
+      });
+      return;
+    }
+
+    if (errorType === "Captcha Required") {
+      setShouldShowCaptcha(true);
+      return;
+    }
+
+    handleLoginFailure();
+  };
+
+  const resetCaptcha = () => {
+    captchaRef.current?.resetCaptcha();
+    setCaptchaToken("");
+  };
+
+  const handleEmailLogin = async (formData: LoginFormData) => {
+    setIsLoading(true);
+
     try {
-      if (!email || !password) {
-        return;
-      }
+      const loginResult = await attemptLogin({
+        email: formData.email.toLowerCase(),
+        password: formData.password,
+        captchaToken
+      });
 
-      setIsLoading(true);
-      if (callbackPort) {
-        const isCliLoginSuccessful = await attemptCliLogin({
-          email: email.toLowerCase(),
-          password,
-          captchaToken
-        });
+      const isLoginSuccessful = loginResult?.success;
 
-        if (isCliLoginSuccessful && isCliLoginSuccessful.success) {
-          navigateToSelectOrganization(callbackPort);
-        } else {
-          setLoginError(true);
-          createNotification({
-            text: "CLI login unsuccessful. Double-check your credentials and try again.",
-            type: "error"
-          });
-        }
+      if (isLoginSuccessful) {
+        saveLastLogin({ method: LoginMethod.EMAIL });
+        navigateToSelectOrganization(callbackPort || undefined, isAdmin);
       } else {
-        const isLoginSuccessful = await attemptLogin({
-          email: email.toLowerCase(),
-          password,
-          captchaToken
-        });
-
-        if (isLoginSuccessful && isLoginSuccessful.success) {
-          saveLastLogin({ method: LoginMethod.EMAIL });
-          navigateToSelectOrganization(undefined, isAdmin);
-          createNotification({
-            text: "Successfully logged in",
-            type: "success"
-          });
-        }
+        handleLoginFailure();
       }
     } catch (err: any) {
       console.error(err);
-      if (err.response.data.error === "User Locked") {
-        createNotification({
-          title: err.response.data.error,
-          text: err.response.data.message,
-          type: "error"
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      if (err.response.data.error === "Captcha Required") {
-        setShouldShowCaptcha(true);
-        setIsLoading(false);
-        return;
-      }
-
-      setLoginError(true);
-      createNotification({
-        text: "Login unsuccessful. Double-check your credentials and try again.",
-        type: "error"
-      });
+      handleLoginError(err);
+    } finally {
+      resetCaptcha();
+      setIsLoading(false);
     }
-
-    if (captchaRef.current) {
-      captchaRef.current.resetCaptcha();
-    }
-
-    setCaptchaToken("");
-    setIsLoading(false);
   };
 
   if (config.defaultAuthOrgAuthEnforced && config.defaultAuthOrgAuthMethod && !isAdmin) {
     return (
       <form
-        onSubmit={handleLogin}
+        onSubmit={handleSubmit(handleEmailLogin)}
         className="mx-auto flex w-full flex-col items-center justify-center"
       >
-        <h1 className="mb-8 bg-linear-to-b from-white to-bunker-200 bg-clip-text text-center text-xl font-medium text-transparent">
-          Login to Infisical
-        </h1>
-        <RegionSelect />
-        {config.defaultAuthOrgAuthMethod === AuthMethod.SAML && (
-          <OrgLoginButton label="Continue with SAML" onClick={handleSaml} />
-        )}
-        {config.defaultAuthOrgAuthMethod === AuthMethod.OIDC && (
-          <OrgLoginButton label="Continue with OIDC" onClick={handleOidc} className="mt-2" />
-        )}
+        <Card className="mx-auto w-full max-w-sm items-stretch gap-0 p-6">
+          <CardHeader className="mb-8 gap-2">
+            <CardTitle className="bg-linear-to-b from-white to-bunker-200 bg-clip-text text-[1.7rem] font-medium text-transparent">
+              Log in to Infisical
+            </CardTitle>
+            <CardAction className="-mr-2">
+              <RegionSelect compact />
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            {config.defaultAuthOrgAuthMethod === AuthMethod.SAML && (
+              <OrgLoginButton label="Continue with SAML" onClick={handleSaml} />
+            )}
+            {config.defaultAuthOrgAuthMethod === AuthMethod.OIDC && (
+              <OrgLoginButton label="Continue with OIDC" onClick={handleOidc} className="mt-2" />
+            )}
+          </CardContent>
+        </Card>
       </form>
     );
   }
 
   return (
     <form
-      onSubmit={handleLogin}
+      onSubmit={handleSubmit(handleEmailLogin)}
       className="mx-auto flex w-full flex-col items-center justify-center"
     >
-      <h1 className="mb-8 bg-linear-to-b from-white to-bunker-200 bg-clip-text text-center text-xl font-medium text-transparent">
-        Login to Infisical
-      </h1>
-      <RegionSelect />
-      {shouldDisplayLoginMethod(LoginMethod.SAML) && (
-        <OrgLoginButton
-          label="Continue with SAML"
-          onClick={handleSaml}
-          showLastUsed={isLastUsedMethod(LoginMethod.SAML)}
-        />
-      )}
-      {shouldDisplayLoginMethod(LoginMethod.OIDC) && (
-        <OrgLoginButton
-          label="Continue with OIDC"
-          onClick={handleOidc}
-          className="mt-2"
-          showLastUsed={isLastUsedMethod(LoginMethod.OIDC)}
-        />
-      )}
-      {shouldDisplayLoginMethod(LoginMethod.LDAP) && (
-        <OrgLoginButton
-          label="Continue with LDAP"
-          onClick={() => navigate({ to: "/login/ldap" })}
-          className="mt-2"
-          showLastUsed={isLastUsedMethod(LoginMethod.LDAP)}
-        />
-      )}
-      <div className="mt-2 flex w-1/4 min-w-[21.2rem] gap-2 md:min-w-[20.1rem] lg:w-1/6">
-        {shouldDisplayLoginMethod(LoginMethod.GOOGLE) && (
-          <SocialLoginButton
-            icon={faGoogle}
-            label={t("login.continue-with-google")}
-            onClick={() => handleSocialLogin(LoginMethod.GOOGLE)}
-            showLastUsed={isLastUsedMethod(LoginMethod.GOOGLE)}
-          />
-        )}
-        {shouldDisplayLoginMethod(LoginMethod.GITHUB) && (
-          <SocialLoginButton
-            icon={faGithub}
-            label="Continue with GitHub"
-            onClick={() => handleSocialLogin(LoginMethod.GITHUB)}
-            showLastUsed={isLastUsedMethod(LoginMethod.GITHUB)}
-          />
-        )}
-        {shouldDisplayLoginMethod(LoginMethod.GITLAB) && (
-          <SocialLoginButton
-            icon={faGitlab}
-            label="Continue with GitLab"
-            onClick={() => handleSocialLogin(LoginMethod.GITLAB)}
-            showLastUsed={isLastUsedMethod(LoginMethod.GITLAB)}
-          />
-        )}
-      </div>
-      {(!config.enabledLoginMethods ||
-        (shouldDisplayLoginMethod(LoginMethod.EMAIL) && config.enabledLoginMethods.length > 1)) && (
-        <div className="my-4 flex w-1/4 min-w-[20rem] flex-row items-center py-2 lg:w-1/6">
-          <div className="w-full border-t border-mineshaft-400/60" />
-          <span className="mx-2 text-xs text-mineshaft-200">or</span>
-          <div className="w-full border-t border-mineshaft-400/60" />
-        </div>
-      )}
-      {shouldDisplayLoginMethod(LoginMethod.EMAIL) && (
-        <>
-          <div className="w-1/4 min-w-[21.2rem] rounded-md text-center md:min-w-[20.1rem] lg:w-1/6">
-            <Input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              type="email"
-              placeholder="Enter your email..."
-              isRequired
-              autoComplete="username"
-              className="h-10"
-            />
-          </div>
-          <div className="mt-2 w-1/4 min-w-[21.2rem] rounded-md text-center md:min-w-[20.1rem] lg:w-1/6">
-            <Input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              type={showPassword ? "text" : "password"}
-              placeholder="Enter your password..."
-              isRequired
-              autoComplete="current-password"
-              id="current-password"
-              className="select:-webkit-autofill:focus h-10"
-              rightIcon={
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="cursor-pointer text-gray-400"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
+      <Card className="mx-auto w-full max-w-sm items-stretch gap-0 p-6">
+        <CardHeader className="mb-4 gap-4">
+          <CardTitle className="ml-0.5 bg-linear-to-b from-white to-bunker-200 bg-clip-text text-[1.65rem] font-medium text-transparent">
+            Log in to Infisical
+          </CardTitle>
+          <CardAction className="-mr-2">
+            <RegionSelect compact />
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          {shouldDisplayLoginMethod(LoginMethod.EMAIL) && (
+            <>
+              <div className="w-full">
+                <Input
+                  {...register("email")}
+                  type="email"
+                  id="email"
+                  placeholder="Enter your email..."
+                  autoComplete="username"
+                  className="h-10"
+                />
+                {errors.email && (
+                  <span className="mt-1 text-xs text-red-500">{errors.email.message}</span>
+                )}
+              </div>
+              <div className="mt-2 w-full">
+                <InputGroup className="h-10">
+                  <InputGroupInput
+                    {...register("password")}
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Enter your password..."
+                    autoComplete="current-password"
+                    id="current-password"
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <IconButton
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? <EyeOff /> : <Eye />}
+                    </IconButton>
+                  </InputGroupAddon>
+                </InputGroup>
+                {errors.password && (
+                  <span className="mt-1 text-xs text-red-500">{errors.password.message}</span>
+                )}
+              </div>
+              {shouldShowCaptcha && envConfig.CAPTCHA_SITE_KEY && (
+                <div className="mt-4 flex justify-center [&>div]:!w-full">
+                  <HCaptcha
+                    theme="dark"
+                    sitekey={envConfig.CAPTCHA_SITE_KEY}
+                    onVerify={(token) => setCaptchaToken(token)}
+                    ref={captchaRef}
+                  />
+                </div>
+              )}
+              <div className="relative mt-4 w-full">
+                <Button
+                  type="submit"
+                  variant="project"
+                  size="lg"
+                  isFullWidth
+                  isDisabled={(shouldShowCaptcha && captchaToken === "") || isLoading}
+                  isPending={isLoading}
                 >
-                  <FontAwesomeIcon size="sm" icon={showPassword ? faEyeSlash : faEye} />
-                </button>
-              }
-            />
-          </div>
-          {shouldShowCaptcha && envConfig.CAPTCHA_SITE_KEY && (
-            <div className="mt-4">
-              <HCaptcha
-                theme="dark"
-                sitekey={envConfig.CAPTCHA_SITE_KEY}
-                onVerify={(token) => setCaptchaToken(token)}
-                ref={captchaRef}
-              />
+                  Continue with Email
+                </Button>
+                {isLastUsedMethod(LoginMethod.EMAIL) && (
+                  <Badge variant="default" className="absolute -top-2 -right-2">
+                    Last used
+                  </Badge>
+                )}
+              </div>
+            </>
+          )}
+          {(!config.enabledLoginMethods ||
+            (shouldDisplayLoginMethod(LoginMethod.EMAIL) &&
+              config.enabledLoginMethods.length > 1)) && (
+            <div className="my-4 flex w-full flex-row items-center py-2">
+              <div className="w-full border-t border-mineshaft-400/60" />
+              <span className="mx-2 text-xs text-mineshaft-400">or</span>
+              <div className="w-full border-t border-mineshaft-400/60" />
             </div>
           )}
-          <div className="relative mt-4 w-1/4 min-w-[21.2rem] rounded-md text-center md:min-w-[20.1rem] lg:w-1/6">
-            <Button
-              disabled={shouldShowCaptcha && captchaToken === ""}
-              type="submit"
-              size="sm"
-              isFullWidth
-              className="h-10"
-              colorSchema="primary"
-              variant="solid"
-              isLoading={isLoading}
-            >
-              Continue with Email
-            </Button>
-            {isLastUsedMethod(LoginMethod.EMAIL) && (
-              <Badge variant="default" className="absolute -top-2 -right-2 rounded-full">
-                Last used
-              </Badge>
+          <div className="flex w-full gap-2">
+            {shouldDisplayLoginMethod(LoginMethod.GOOGLE) && (
+              <SocialLoginButton
+                icon={faGoogle}
+                label={t("login.continue-with-google")}
+                onClick={() => handleSocialLogin(LoginMethod.GOOGLE)}
+                showLastUsed={isLastUsedMethod(LoginMethod.GOOGLE)}
+              />
+            )}
+            {shouldDisplayLoginMethod(LoginMethod.GITHUB) && (
+              <SocialLoginButton
+                icon={faGithub}
+                label="Continue with GitHub"
+                onClick={() => handleSocialLogin(LoginMethod.GITHUB)}
+                showLastUsed={isLastUsedMethod(LoginMethod.GITHUB)}
+              />
+            )}
+            {shouldDisplayLoginMethod(LoginMethod.GITLAB) && (
+              <SocialLoginButton
+                icon={faGitlab}
+                label="Continue with GitLab"
+                onClick={() => handleSocialLogin(LoginMethod.GITLAB)}
+                showLastUsed={isLastUsedMethod(LoginMethod.GITLAB)}
+              />
             )}
           </div>
-        </>
-      )}
-      {!isLoading && loginError && <Error text={t("login.error-login") ?? ""} />}
-      {config.allowSignUp &&
-      (shouldDisplayLoginMethod(LoginMethod.EMAIL) ||
-        shouldDisplayLoginMethod(LoginMethod.GOOGLE) ||
-        shouldDisplayLoginMethod(LoginMethod.GITHUB) ||
-        shouldDisplayLoginMethod(LoginMethod.GITLAB)) ? (
-        <div className="mt-6 flex flex-row text-sm text-bunker-400">
-          <Link to="/signup">
-            <span className="cursor-pointer duration-200 hover:text-bunker-200 hover:underline hover:decoration-primary-700 hover:underline-offset-4">
-              Don&apos;t have an account yet? {t("login.create-account")}
-            </span>
-          </Link>
-        </div>
-      ) : (
-        <div className="mt-4" />
-      )}
-      {shouldDisplayLoginMethod(LoginMethod.EMAIL) && (
-        <div className="mt-2 flex flex-row text-sm text-bunker-400">
-          <Link to="/account-recovery">
-            <span className="cursor-pointer duration-200 hover:text-bunker-200 hover:underline hover:decoration-primary-700 hover:underline-offset-4">
-              Recover your account
-            </span>
-          </Link>
-        </div>
-      )}
+          {shouldDisplayLoginMethod(LoginMethod.SAML) && (
+            <OrgLoginButton
+              label="Continue with SAML"
+              onClick={handleSaml}
+              className="mt-2"
+              showLastUsed={isLastUsedMethod(LoginMethod.SAML)}
+            />
+          )}
+          {shouldDisplayLoginMethod(LoginMethod.OIDC) && (
+            <OrgLoginButton
+              label="Continue with OIDC"
+              onClick={handleOidc}
+              className="mt-2"
+              showLastUsed={isLastUsedMethod(LoginMethod.OIDC)}
+            />
+          )}
+          {shouldDisplayLoginMethod(LoginMethod.LDAP) && (
+            <OrgLoginButton
+              label="Continue with LDAP"
+              onClick={() =>
+                navigate({
+                  to: "/login/ldap",
+                  search: {
+                    callback_port: callbackPort
+                  }
+                })
+              }
+              className="mt-2"
+              showLastUsed={isLastUsedMethod(LoginMethod.LDAP)}
+            />
+          )}
+
+          {!isLoading && loginError && <Error text={t("login.error-login") ?? ""} />}
+          {config.allowSignUp &&
+          (shouldDisplayLoginMethod(LoginMethod.EMAIL) ||
+            shouldDisplayLoginMethod(LoginMethod.GOOGLE) ||
+            shouldDisplayLoginMethod(LoginMethod.GITHUB) ||
+            shouldDisplayLoginMethod(LoginMethod.GITLAB)) ? (
+            <div className="mt-6 flex flex-row justify-center text-xs text-label">
+              <Link to="/signup">
+                <span className="cursor-pointer duration-200 hover:text-foreground hover:underline hover:decoration-project/45 hover:underline-offset-2">
+                  Don&apos;t have an account yet? {t("login.create-account")}
+                </span>
+              </Link>
+            </div>
+          ) : (
+            <div className="mt-4" />
+          )}
+          {shouldDisplayLoginMethod(LoginMethod.EMAIL) && (
+            <div className="mt-2 flex flex-row justify-center text-xs text-label">
+              <Link to="/account-recovery">
+                <span className="cursor-pointer duration-200 hover:text-foreground hover:underline hover:decoration-project/45 hover:underline-offset-2">
+                  Recover your account
+                </span>
+              </Link>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </form>
   );
 };

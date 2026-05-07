@@ -1,16 +1,26 @@
+import { IdentityAuthMethod } from "@app/db/schemas";
 import {
   AcmeAccountActor,
   AcmeProfileActor,
   EstAccountActor,
+  GatewayActor,
   IdentityActor,
   KmipClientActor,
   PlatformActor,
+  ScepAccountActor,
   ScimClientActor,
   ServiceActor,
   UnknownUserActor,
   UserActor
 } from "@app/ee/services/audit-log/audit-log-types";
-import { EnforcementLevel } from "@app/lib/types";
+import { PamParentType } from "@app/ee/services/pam-account/pam-account-enums";
+import { SecretRotation } from "@app/ee/services/secret-rotation-v2/secret-rotation-v2-enums";
+import { EnforcementLevel, SecretSharingAccessType } from "@app/lib/types";
+import { AppConnection } from "@app/services/app-connection/app-connection-enums";
+import { AuthMethod } from "@app/services/auth/auth-type";
+import { WebhookType } from "@app/services/webhook/webhook-types";
+
+export type HubSpotSignupMethod = AuthMethod | "invite";
 
 export enum PostHogEventTypes {
   SecretPush = "secrets pushed",
@@ -20,6 +30,7 @@ export enum PostHogEventTypes {
   SecretDeleted = "secrets deleted",
   AdminInit = "admin initialization",
   UserSignedUp = "User Signed Up",
+  UserLoginV2 = "User Login V2",
   SecretRotated = "secrets rotated",
   SecretScannerFull = "historical cloud secret scan",
   SecretScannerPush = "cloud secret scan",
@@ -28,6 +39,16 @@ export enum PostHogEventTypes {
   IntegrationSynced = "Integration Synced",
   IntegrationDeleted = "Integration Deleted",
   MachineIdentityCreated = "Machine Identity Created",
+  MachineIdentityUpdated = "Machine Identity Updated",
+  MachineIdentityDeleted = "Machine Identity Deleted",
+  MachineIdentityLogin = "Machine Identity Login",
+  MachineIdentityAuthMethodAttached = "Machine Identity Auth Method Attached",
+  MachineIdentityAuthMethodUpdated = "Machine Identity Auth Method Updated",
+  MachineIdentityAuthMethodRevoked = "Machine Identity Auth Method Revoked",
+  MachineIdentityClientSecretCreated = "Machine Identity Client Secret Created",
+  MachineIdentityClientSecretRevoked = "Machine Identity Client Secret Revoked",
+  MachineIdentityTokenCreated = "Machine Identity Token Created",
+  MachineIdentityTokenRevoked = "Machine Identity Token Revoked",
   UserOrgInvitation = "User Org Invitation",
   TelemetryInstanceStats = "Self Hosted Instance Stats",
   SecretRequestCreated = "Secret Request Created",
@@ -55,7 +76,39 @@ export enum PostHogEventTypes {
   DynamicSecretCreated = "Dynamic Secret Created",
   DynamicSecretDeleted = "Dynamic Secret Deleted",
   DynamicSecretLeaseCreated = "Dynamic Secret Lease Created",
-  DynamicSecretLeaseRenewed = "Dynamic Secret Lease Renewed"
+  DynamicSecretLeaseRenewed = "Dynamic Secret Lease Renewed",
+  SecretFolderCreated = "Secret Folder Created",
+  SecretImportCreated = "Secret Import Created",
+  SecretShared = "Secret Shared",
+  SharedSecretViewed = "Shared Secret Viewed",
+  SecretRollbackPerformed = "Secret Rollback Performed",
+  WebhookCreated = "Webhook Created",
+  SecretReminderCreated = "Secret Reminder Created",
+  EnvironmentCreated = "Environment Created",
+  SSOConfigured = "SSO Configured",
+  AppConnectionCreated = "App Connection Created",
+  AppConnectionDeleted = "App Connection Deleted",
+  SecretRotationV2Created = "Secret Rotation V2 Created",
+  SecretRotationV2Deleted = "Secret Rotation V2 Deleted",
+  SecretRotationV2Executed = "Secret Rotation V2 Executed",
+  GatewayCertExchanged = "Gateway Cert Exchanged",
+  PamResourceCreated = "PAM Resource Created",
+  PamResourceDeleted = "PAM Resource Deleted",
+  PamAccountCreated = "PAM Account Created",
+  PamAccountDeleted = "PAM Account Deleted",
+  PamAccountAccessed = "PAM Account Accessed",
+  PamAccountRotated = "PAM Account Rotated",
+  PamSessionStarted = "PAM Session Started",
+  PamSessionEnded = "PAM Session Ended",
+  PamWebAccessStarted = "PAM Web Access Started",
+  PamDiscoverySourceCreated = "PAM Discovery Source Created",
+  PamDiscoverySourceDeleted = "PAM Discovery Source Deleted",
+  PamDiscoveryScanTriggered = "PAM Discovery Scan Triggered",
+  PamRotationRuleCreated = "PAM Rotation Rule Created",
+  PamRotationRuleDeleted = "PAM Rotation Rule Deleted",
+
+  ResourceAuthMethodLogin = "Resource Auth Method Login",
+  ResourceAuthMethodUpdated = "Resource Auth Method Updated"
 }
 
 export type TSecretModifiedEvent = {
@@ -73,6 +126,7 @@ export type TSecretModifiedEvent = {
     secretPath: string;
     channel?: string;
     userAgent?: string;
+    actorType?: string;
     actor?:
       | UserActor
       | IdentityActor
@@ -83,7 +137,9 @@ export type TSecretModifiedEvent = {
       | AcmeAccountActor
       | AcmeProfileActor
       | KmipClientActor
-      | EstAccountActor;
+      | EstAccountActor
+      | ScepAccountActor
+      | GatewayActor;
   };
 };
 
@@ -103,6 +159,15 @@ export type TUserSignedUpEvent = {
     username: string;
     email: string;
     attributionSource?: string;
+    signupMethod?: string;
+  };
+};
+
+export type TUserLoginV2Event = {
+  event: PostHogEventTypes.UserLoginV2;
+  properties: {
+    email: string;
+    channel: string;
   };
 };
 
@@ -128,6 +193,61 @@ export type TMachineIdentityCreatedEvent = {
     hasDeleteProtection: boolean;
     orgId: string;
     identityId: string;
+  };
+};
+
+export type TMachineIdentityUpdatedEvent = {
+  event: PostHogEventTypes.MachineIdentityUpdated;
+  properties: {
+    identityId: string;
+    orgId: string;
+    name: string;
+    hasDeleteProtection: boolean;
+  };
+};
+
+export type TMachineIdentityDeletedEvent = {
+  event: PostHogEventTypes.MachineIdentityDeleted;
+  properties: {
+    identityId: string;
+    orgId: string;
+  };
+};
+
+export type TMachineIdentityLoginEvent = {
+  event: PostHogEventTypes.MachineIdentityLogin;
+  properties: {
+    identityId: string;
+    orgId: string;
+    authMethod: IdentityAuthMethod;
+  };
+};
+
+export type TMachineIdentityAuthMethodEvent = {
+  event:
+    | PostHogEventTypes.MachineIdentityAuthMethodAttached
+    | PostHogEventTypes.MachineIdentityAuthMethodUpdated
+    | PostHogEventTypes.MachineIdentityAuthMethodRevoked;
+  properties: {
+    identityId: string;
+    orgId: string;
+    authMethod: IdentityAuthMethod;
+  };
+};
+
+export type TMachineIdentityClientSecretEvent = {
+  event: PostHogEventTypes.MachineIdentityClientSecretCreated | PostHogEventTypes.MachineIdentityClientSecretRevoked;
+  properties: {
+    identityId: string;
+    orgId: string;
+  };
+};
+
+export type TMachineIdentityTokenEvent = {
+  event: PostHogEventTypes.MachineIdentityTokenCreated | PostHogEventTypes.MachineIdentityTokenRevoked;
+  properties: {
+    identityId: string;
+    orgId: string;
   };
 };
 
@@ -307,6 +427,85 @@ export type TNotificationUpdatedEvent = {
   };
 };
 
+export type TSecretFolderCreatedEvent = {
+  event: PostHogEventTypes.SecretFolderCreated;
+  properties: {
+    projectId: string;
+    environment: string;
+    folderPath?: string;
+    folderId?: string;
+    folderName?: string;
+  };
+};
+
+export type TSecretImportCreatedEvent = {
+  event: PostHogEventTypes.SecretImportCreated;
+  properties: {
+    projectId: string;
+    importFromEnvironment: string;
+    importFromSecretPath: string;
+    importToEnvironment: string;
+    importToSecretPath: string;
+  };
+};
+
+export type TSecretSharedEvent = {
+  event: PostHogEventTypes.SecretShared;
+  properties: {
+    accessType: SecretSharingAccessType;
+    expiresAt: string;
+    hasPassword: boolean;
+  };
+};
+
+export type TSharedSecretViewedEvent = {
+  event: PostHogEventTypes.SharedSecretViewed;
+  properties: {
+    sharedSecretId: string;
+    accessType: SecretSharingAccessType;
+  };
+};
+
+export type TSecretRollbackPerformedEvent = {
+  event: PostHogEventTypes.SecretRollbackPerformed;
+  properties: {
+    projectId: string;
+    environment: string;
+    commitId: string;
+    deepRollback: boolean;
+    totalChanges: number;
+  };
+};
+
+export type TWebhookCreatedEvent = {
+  event: PostHogEventTypes.WebhookCreated;
+  properties: {
+    projectId: string;
+    environment: string;
+    webhookId: string;
+    type: WebhookType;
+  };
+};
+
+export type TSecretReminderCreatedEvent = {
+  event: PostHogEventTypes.SecretReminderCreated;
+  properties: {
+    secretId: string;
+    reminderRepeatDays?: number | null;
+    hasNote: boolean;
+    isOneTime: boolean;
+  };
+};
+
+export type TEnvironmentCreatedEvent = {
+  event: PostHogEventTypes.EnvironmentCreated;
+  properties: {
+    projectId: string;
+    environmentName: string;
+    environmentSlug: string;
+  };
+};
+
 export type TSecretApprovalPolicyCreatedEvent = {
   event: PostHogEventTypes.SecretApprovalPolicyCreated;
   properties: {
@@ -477,13 +676,180 @@ export type TDynamicSecretLeaseRenewedEvent = {
   };
 };
 
+export type TSSOConfiguredEvent = {
+  event: PostHogEventTypes.SSOConfigured;
+  properties: {
+    provider: string;
+    action: "create" | "update";
+  };
+};
+
+export type TAppConnectionCreatedEvent = {
+  event: PostHogEventTypes.AppConnectionCreated;
+  properties: {
+    appConnectionId: string;
+    app: AppConnection;
+    method: string;
+  };
+};
+
+export type TAppConnectionDeletedEvent = {
+  event: PostHogEventTypes.AppConnectionDeleted;
+  properties: {
+    appConnectionId: string;
+    app: AppConnection;
+  };
+};
+
+export type TSecretRotationV2CreatedEvent = {
+  event: PostHogEventTypes.SecretRotationV2Created;
+  properties: {
+    rotationId: string;
+    type: SecretRotation;
+    projectId: string;
+    environment: string;
+    secretPath: string;
+  };
+};
+
+export type TSecretRotationV2DeletedEvent = {
+  event: PostHogEventTypes.SecretRotationV2Deleted;
+  properties: {
+    rotationId: string;
+    type: SecretRotation;
+    projectId: string;
+    environment: string;
+    secretPath: string;
+  };
+};
+
+export type TSecretRotationV2ExecutedEvent = {
+  event: PostHogEventTypes.SecretRotationV2Executed;
+  properties: {
+    rotationId: string;
+    type: SecretRotation;
+    projectId: string;
+    environment: string;
+    secretPath: string;
+  };
+};
+
+export type TGatewayCertExchangedEvent = {
+  event: PostHogEventTypes.GatewayCertExchanged;
+  properties: {
+    certificateSerialNumber: string;
+    identityId: string;
+  };
+};
+
+export type TPamResourceEvent = {
+  event: PostHogEventTypes.PamResourceCreated | PostHogEventTypes.PamResourceDeleted;
+  properties: {
+    resourceType: string;
+    projectId: string;
+  };
+};
+
+export type TPamAccountEvent = {
+  event: PostHogEventTypes.PamAccountCreated | PostHogEventTypes.PamAccountDeleted;
+  properties: {
+    parentType: PamParentType;
+    projectId: string;
+  };
+};
+
+export type TPamAccountAccessedEvent = {
+  event: PostHogEventTypes.PamAccountAccessed;
+  properties: {
+    resourceType: string;
+    projectId: string;
+    duration: number;
+  };
+};
+
+export type TPamAccountRotatedEvent = {
+  event: PostHogEventTypes.PamAccountRotated;
+  properties: {
+    parentType: PamParentType;
+    projectId: string;
+  };
+};
+
+export type TPamSessionStartedEvent = {
+  event: PostHogEventTypes.PamSessionStarted;
+  properties: {
+    projectId: string;
+  };
+};
+
+export type TPamSessionEndedEvent = {
+  event: PostHogEventTypes.PamSessionEnded;
+  properties: {
+    resourceType: string;
+    projectId: string;
+  };
+};
+
+export type TPamWebAccessStartedEvent = {
+  event: PostHogEventTypes.PamWebAccessStarted;
+  properties: {
+    projectId: string;
+  };
+};
+
+export type TPamDiscoveryEvent = {
+  event:
+    | PostHogEventTypes.PamDiscoverySourceCreated
+    | PostHogEventTypes.PamDiscoverySourceDeleted
+    | PostHogEventTypes.PamDiscoveryScanTriggered;
+  properties: {
+    discoveryType: string;
+    projectId: string;
+  };
+};
+
+export type TPamRotationRuleCreatedEvent = {
+  event: PostHogEventTypes.PamRotationRuleCreated;
+  properties: {
+    resourceType: string;
+    projectId: string;
+    enabled: boolean;
+    hasSchedule: boolean;
+  };
+};
+
+export type TPamRotationRuleDeletedEvent = {
+  event: PostHogEventTypes.PamRotationRuleDeleted;
+  properties: {
+    resourceType: string;
+    projectId: string;
+  };
+};
+
+export type TResourceAuthMethodEvent = {
+  event: PostHogEventTypes.ResourceAuthMethodLogin | PostHogEventTypes.ResourceAuthMethodUpdated;
+  properties: {
+    resourceType: "gateway";
+    resourceId: string;
+    orgId: string;
+    method: "aws" | "token";
+  };
+};
+
 export type TPostHogEvent = { distinctId: string; organizationId?: string; organizationName?: string } & (
   | TSecretModifiedEvent
   | TAdminInitEvent
   | TUserSignedUpEvent
+  | TUserLoginV2Event
   | TSecretScannerEvent
   | TUserOrgInvitedEvent
   | TMachineIdentityCreatedEvent
+  | TMachineIdentityUpdatedEvent
+  | TMachineIdentityDeletedEvent
+  | TMachineIdentityLoginEvent
+  | TMachineIdentityAuthMethodEvent
+  | TMachineIdentityClientSecretEvent
+  | TMachineIdentityTokenEvent
   | TIntegrationCreatedEvent
   | TIntegrationSyncedEvent
   | TIntegrationDeletedEvent
@@ -515,4 +881,30 @@ export type TPostHogEvent = { distinctId: string; organizationId?: string; organ
   | TDynamicSecretDeletedEvent
   | TDynamicSecretLeaseCreatedEvent
   | TDynamicSecretLeaseRenewedEvent
+  | TSecretFolderCreatedEvent
+  | TSecretImportCreatedEvent
+  | TSecretSharedEvent
+  | TSharedSecretViewedEvent
+  | TSecretRollbackPerformedEvent
+  | TWebhookCreatedEvent
+  | TSecretReminderCreatedEvent
+  | TEnvironmentCreatedEvent
+  | TSSOConfiguredEvent
+  | TAppConnectionCreatedEvent
+  | TAppConnectionDeletedEvent
+  | TSecretRotationV2CreatedEvent
+  | TSecretRotationV2DeletedEvent
+  | TSecretRotationV2ExecutedEvent
+  | TGatewayCertExchangedEvent
+  | TPamResourceEvent
+  | TPamAccountEvent
+  | TPamAccountAccessedEvent
+  | TPamAccountRotatedEvent
+  | TPamSessionStartedEvent
+  | TPamSessionEndedEvent
+  | TPamWebAccessStartedEvent
+  | TPamDiscoveryEvent
+  | TPamRotationRuleCreatedEvent
+  | TPamRotationRuleDeletedEvent
+  | TResourceAuthMethodEvent
 );

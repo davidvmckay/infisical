@@ -5,7 +5,8 @@ import { WsTag } from "../tags/types";
 export enum ApprovalStatus {
   PENDING = "pending",
   APPROVED = "approved",
-  REJECTED = "rejected"
+  REJECTED = "rejected",
+  REVOKED = "revoked"
 }
 
 export enum CommitType {
@@ -35,6 +36,7 @@ export type TSecretApprovalSecChange = {
   secretValueHidden?: boolean;
   secretComment?: string;
   isRotatedSecret?: boolean;
+  isHoneyTokenSecret?: boolean;
   tags?: string[];
 };
 
@@ -133,6 +135,7 @@ export type TUpdateSecretApprovalReviewStatusDTO = {
   status: ApprovalStatus;
   comment?: string;
   id: string;
+  projectId: string;
 };
 
 export type TUpdateSecretApprovalRequestStatusDTO = {

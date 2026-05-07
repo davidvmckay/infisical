@@ -23,7 +23,13 @@ export const NotificationContent = ({
   return (
     <div className="msg-container">
       {title && <div className="text-md mb-1 font-medium">{title}</div>}
-      <div className={title ? "text-sm text-neutral-400" : "text-md"}>{text}</div>
+      <div
+        className={
+          title ? "text-sm whitespace-pre-line text-neutral-400" : "text-md whitespace-pre-line"
+        }
+      >
+        {text}
+      </div>
       {children && <div className="mt-2">{children}</div>}
       {(callToAction || copyActions) && (
         <div
@@ -65,7 +71,7 @@ export const createNotification = (
   toast(<NotificationContent {...myProps} />, {
     position: "bottom-right",
     ...toastProps,
-    autoClose: toastProps.autoClose || (myProps?.type === "error" ? 8000 : 5000),
+    autoClose: toastProps.autoClose || (myProps?.type === "error" ? 8000 : 3000),
     theme: "dark",
     type: myProps?.type || "info",
     className: `pointer-events-auto ${toastProps.className}`

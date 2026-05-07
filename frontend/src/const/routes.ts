@@ -7,10 +7,9 @@ const setRoute = <TFull extends FileRouteTypes["fullPaths"], TId extends FileRou
 
 export const ROUTE_PATHS = Object.freeze({
   Auth: {
-    LoginSSO: setRoute("/login/sso", "/_restrict-login-signup/login/sso"),
-    ProviderSuccessPage: setRoute(
-      "/login/provider/success",
-      "/_restrict-login-signup/login/provider/success"
+    SelectOrgPage: setRoute(
+      "/login/select-organization",
+      "/_restrict-login-signup/login/select-organization"
     ),
     SignUpSsoPage: setRoute("/signup/sso", "/_restrict-login-signup/signup/sso"),
     AccountRecoveryResetPage: setRoute(
@@ -71,8 +70,12 @@ export const ROUTE_PATHS = Object.freeze({
       )
     },
     NetworkingPage: setRoute(
-      "/organizations/$orgId/networking",
-      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/networking"
+      "/organizations/$orgId/networking/",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/networking/"
+    ),
+    GatewayDetailsByIDPage: setRoute(
+      "/organizations/$orgId/networking/gateways/$gatewayId",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/networking/gateways/$gatewayId"
     )
   },
   SecretManager: {
@@ -103,6 +106,14 @@ export const ROUTE_PATHS = Object.freeze({
     IntegrationsListPage: setRoute(
       "/organizations/$orgId/projects/secret-management/$projectId/integrations",
       "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/secret-management/$projectId/_secret-manager-layout/integrations/"
+    ),
+    SettingsPage: setRoute(
+      "/organizations/$orgId/projects/secret-management/$projectId/settings",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/secret-management/$projectId/_secret-manager-layout/settings"
+    ),
+    InsightsPage: setRoute(
+      "/organizations/$orgId/projects/secret-management/$projectId/insights",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/secret-management/$projectId/_secret-manager-layout/insights"
     ),
     IntegrationDetailsByIDPage: setRoute(
       "/organizations/$orgId/projects/secret-management/$projectId/integrations/$integrationId",
@@ -335,6 +346,10 @@ export const ROUTE_PATHS = Object.freeze({
     CertificateDetailsByIDPage: setRoute(
       "/organizations/$orgId/projects/cert-manager/$projectId/certificates/$certificateId",
       "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/cert-manager/$projectId/_cert-manager-layout/certificates/$certificateId"
+    ),
+    SignerDetailByIDPage: setRoute(
+      "/organizations/$orgId/projects/cert-manager/$projectId/code-signing/$signerId",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/cert-manager/$projectId/_cert-manager-layout/code-signing/$signerId"
     )
   },
   Ssh: {
@@ -362,13 +377,17 @@ export const ROUTE_PATHS = Object.freeze({
       "/organizations/$orgId/projects/pam/$projectId/resources/",
       "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/resources/"
     ),
+    SettingsPage: setRoute(
+      "/organizations/$orgId/projects/pam/$projectId/settings",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/settings"
+    ),
     SessionsPage: setRoute(
       "/organizations/$orgId/projects/pam/$projectId/sessions",
       "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/sessions/"
     ),
     ApprovalRequestDetailPage: setRoute(
-      "/organizations/$orgId/projects/pam/$projectId/approval-requests/$approvalRequestId",
-      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/approval-requests/$approvalRequestId"
+      "/organizations/$orgId/projects/pam/$projectId/approvals/$approvalRequestId",
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/approvals/$approvalRequestId"
     ),
     PamSessionByIDPage: setRoute(
       "/organizations/$orgId/projects/pam/$projectId/sessions/$sessionId",
@@ -386,6 +405,7 @@ export const ROUTE_PATHS = Object.freeze({
       "/organizations/$orgId/projects/pam/$projectId/resources/$resourceType/$resourceId/accounts/$accountId/access",
       "/_authenticate/_inject-org-details/organizations/$orgId/projects/pam/$projectId/resources/$resourceType/$resourceId/accounts/$accountId/access"
     ),
+
     DiscoveryPage: setRoute(
       "/organizations/$orgId/projects/pam/$projectId/discovery",
       "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/pam/$projectId/_pam-layout/discovery/"

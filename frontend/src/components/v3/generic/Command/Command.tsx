@@ -7,12 +7,22 @@ import { SearchIcon } from "lucide-react";
 import { cn } from "../../utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../Dialog";
 
-function Command({ className, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
+function Command({
+  className,
+  filter = (value: string, search: string, keywords?: string[]) => {
+    const searchLower = search.toLowerCase();
+    if (value.toLowerCase().includes(searchLower)) return 1;
+    if (keywords?.some((k) => k.toLowerCase().includes(searchLower))) return 1;
+    return 0;
+  },
+  ...props
+}: React.ComponentProps<typeof CommandPrimitive>) {
   return (
     <CommandPrimitive
       data-slot="command"
+      filter={filter}
       className={cn(
-        "text-popover-foreground flex h-full w-full flex-col overflow-hidden rounded-md bg-popover outline-0",
+        "flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-foreground outline-0",
         className
       )}
       {...props}
@@ -104,7 +114,7 @@ function CommandGroup({
     <CommandPrimitive.Group
       data-slot="command-group"
       className={cn(
-        "[&_[cmdk-group-heading]]:text-muted-foreground overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium",
+        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted",
         className
       )}
       {...props}
@@ -145,7 +155,7 @@ function CommandShortcut({ className, ...props }: React.ComponentProps<"span">) 
   return (
     <span
       data-slot="command-shortcut"
-      className={cn("text-muted-foreground ml-auto text-xs tracking-widest", className)}
+      className={cn("ml-auto text-xs tracking-widest text-accent", className)}
       {...props}
     />
   );

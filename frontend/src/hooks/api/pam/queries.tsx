@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { useQuery, UseQueryOptions } from "@tanstack/react-query";
 
 import { apiRequest } from "@app/config/request";
@@ -8,14 +9,20 @@ import {
   TListPamAccountsDTO,
   TListPamResourcesDTO,
   TPamAccount,
+  TPamAccountDependency,
+  TPamAccountPolicy,
   TPamResource,
-  TPamSession
+  TPamResourceDependency,
+  TPamRotationRule,
+  TPamSession,
+  TPamSessionLogsPage
 } from "./types";
 
 export const pamKeys = {
   all: ["pam"] as const,
   resource: () => [...pamKeys.all, "resource"] as const,
   account: () => [...pamKeys.all, "account"] as const,
+  accountPolicy: () => [...pamKeys.all, "account-policy"] as const,
   session: () => [...pamKeys.all, "session"] as const,
   listResourceOptions: () => [...pamKeys.resource(), "options"] as const,
   listResources: ({ projectId, ...params }: TListPamResourcesDTO) => [
@@ -31,6 +38,13 @@ export const pamKeys = {
     resourceId
   ],
   listRelatedResources: (resourceId: string) => [...pamKeys.resource(), "related", resourceId],
+  allResourceDependencies: () => [...pamKeys.resource(), "dependencies"] as const,
+  resourceDependencies: (resourceType: string, resourceId: string) => [
+    ...pamKeys.resource(),
+    "dependencies",
+    resourceType,
+    resourceId
+  ],
   listAccounts: ({ projectId, ...params }: TListPamAccountsDTO) => [
     ...pamKeys.account(),
     "list",
@@ -38,8 +52,33 @@ export const pamKeys = {
     params
   ],
   getAccount: (accountId: string) => [...pamKeys.account(), "get", accountId],
+  accountDependencies: (accountId: string) => [...pamKeys.account(), "dependencies", accountId],
+  rotationRules: (resourceId: string) => [...pamKeys.resource(), "rotation-rules", resourceId],
+  listAccountPolicies: (projectId: string, search?: string) => [
+    ...pamKeys.accountPolicy(),
+    "list",
+    projectId,
+    { search }
+  ],
   getSession: (sessionId: string) => [...pamKeys.session(), "get", sessionId],
-  listSessions: (projectId: string) => [...pamKeys.session(), "list", projectId]
+  getSessionLogs: (sessionId: string) => [...pamKeys.session(), "logs", sessionId],
+  listSessions: (projectId: string) => [...pamKeys.session(), "list", projectId],
+  aiInsightsModels: () => [...pamKeys.all, "ai-insights-models"] as const
+};
+
+export type TPamAiInsightsModel = { connectionApp: string; id: string; label: string };
+
+export const useGetPamAiInsightsModels = () => {
+  return useQuery({
+    queryKey: pamKeys.aiInsightsModels(),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<{ models: TPamAiInsightsModel[] }>(
+        "/api/v1/pam/resources/ai-insights/models"
+      );
+
+      return data.models;
+    }
+  });
 };
 
 // Resources
@@ -129,29 +168,19 @@ export const useGetPamResourceById = (
   });
 };
 
-export const useListRelatedResources = (
-  resourceId?: string,
-  options?: Omit<
-    UseQueryOptions<
-      TPamResource[],
-      unknown,
-      TPamResource[],
-      ReturnType<typeof pamKeys.listRelatedResources>
-    >,
-    "queryKey" | "queryFn"
-  >
+export const useGetPamResourceDependencies = (
+  resourceType?: PamResourceType,
+  resourceId?: string
 ) => {
   return useQuery({
-    queryKey: pamKeys.listRelatedResources(resourceId || ""),
+    queryKey: pamKeys.resourceDependencies(resourceType || "", resourceId || ""),
     queryFn: async () => {
-      const { data } = await apiRequest.get<{ resources: TPamResource[] }>(
-        `/api/v1/pam/resources/active-directory/${resourceId}/related-resources`
+      const { data } = await apiRequest.get<{ dependencies: TPamResourceDependency[] }>(
+        `/api/v1/pam/resources/${resourceType}/${resourceId}/dependencies`
       );
-
-      return data.resources;
+      return data.dependencies;
     },
-    enabled: !!resourceId && (options?.enabled ?? true),
-    ...options
+    enabled: !!resourceType && !!resourceId
   });
 };
 
@@ -176,13 +205,17 @@ export const useListPamAccounts = (
   return useQuery({
     queryKey: pamKeys.listAccounts(params),
     queryFn: async () => {
-      const { metadataFilter, filterResourceIds, ...rest } = params;
+      const { metadataFilter, filterResourceIds, filterDomainIds, ...rest } = params;
       const { data } = await apiRequest.post<TListPamAccountsResponse>(
         "/api/v1/pam/accounts/search",
         {
           ...rest,
           metadata: metadataFilter,
           filterResourceIds: filterResourceIds
+            ?.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+          filterDomainIds: filterDomainIds
             ?.split(",")
             .map((s) => s.trim())
             .filter(Boolean)
@@ -215,6 +248,42 @@ export const useGetPamAccountById = (
   });
 };
 
+export const useGetPamAccountDependencies = (accountId?: string) => {
+  return useQuery({
+    queryKey: pamKeys.accountDependencies(accountId!),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<{ dependencies: TPamAccountDependency[] }>(
+        `/api/v1/pam/accounts/${accountId}/dependencies`
+      );
+      return data.dependencies;
+    },
+    enabled: !!accountId
+  });
+};
+
+export type TPamAccountCredentialsResponse = {
+  credentials: Record<string, unknown>;
+  resourceType: string;
+  accountId: string;
+  accountName: string;
+  resourceName: string;
+  projectId: string;
+};
+
+// Rotation Rules
+export const useGetPamRotationRules = (resourceId?: string) => {
+  return useQuery({
+    queryKey: pamKeys.rotationRules(resourceId!),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<{ rules: TPamRotationRule[] }>(
+        `/api/v1/pam/resources/${resourceId}/rotation-rules`
+      );
+      return data.rules;
+    },
+    enabled: !!resourceId
+  });
+};
+
 // Sessions
 export const useGetPamSessionById = (
   sessionId: string,
@@ -237,6 +306,114 @@ export const useGetPamSessionById = (
   });
 };
 
+const LOGS_BATCH_FETCH_SIZE = 100;
+const LOGS_EVENT_PAGE_SIZE = 1000;
+const LOGS_POLL_INTERVAL_MS = 5000;
+
+// Fetch batches until we have at least targetEventCount new events or no more batches remain.
+// Returns the accumulated logs and updated cursor.
+const fetchUntilEventTarget = async (
+  sessionId: string,
+  startCursor: number,
+  targetEventCount: number
+) => {
+  let cursor = startCursor;
+  let totalEvents = 0;
+  let hasMore = false;
+  const accumulatedLogs: TPamSessionLogsPage["logs"] = [];
+
+  do {
+    // eslint-disable-next-line no-await-in-loop
+    const { data } = await apiRequest.get<TPamSessionLogsPage>(
+      `/api/v1/pam/sessions/${sessionId}/logs`,
+      { params: { offset: cursor, limit: LOGS_BATCH_FETCH_SIZE } }
+    );
+    accumulatedLogs.push(...data.logs);
+    cursor += data.batchCount;
+    totalEvents += data.logs.length;
+    hasMore = data.hasMore;
+  } while (hasMore && totalEvents < targetEventCount);
+
+  return { logs: accumulatedLogs, cursor, hasMore };
+};
+
+export const useGetPamSessionLogs = (sessionId: string, isActive: boolean, enabled: boolean) => {
+  const [logs, setLogs] = useState<TPamSessionLogsPage["logs"]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const batchCursorRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled || !sessionId) return undefined;
+    let cancelled = false;
+
+    const fetchInitial = async () => {
+      setIsLoading(true);
+      batchCursorRef.current = 0;
+      try {
+        const targetEvents = isActive ? 0 : LOGS_EVENT_PAGE_SIZE;
+        const result = await fetchUntilEventTarget(sessionId, 0, targetEvents);
+        if (!cancelled) {
+          setLogs(result.logs);
+          batchCursorRef.current = result.cursor;
+          setHasMore(result.hasMore);
+        }
+      } catch {
+        // ignore
+      }
+      if (!cancelled) setIsLoading(false);
+    };
+
+    fetchInitial().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, isActive, enabled]);
+
+  useEffect(() => {
+    if (!enabled || !isActive || !sessionId) return undefined;
+
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await apiRequest.get<TPamSessionLogsPage>(
+          `/api/v1/pam/sessions/${sessionId}/logs`,
+          { params: { offset: batchCursorRef.current, limit: LOGS_BATCH_FETCH_SIZE } }
+        );
+        if (data.batchCount > 0) {
+          batchCursorRef.current += data.batchCount;
+          setLogs((prev) => [...prev, ...data.logs]);
+          setHasMore(data.hasMore);
+        }
+      } catch {
+        // ignore transient errors — next tick will retry
+      }
+    }, LOGS_POLL_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [sessionId, isActive, enabled]);
+
+  // Load more: fetch the next LOGS_EVENT_PAGE_SIZE events (completed sessions only)
+  const loadMore = async () => {
+    setIsLoadingMore(true);
+    try {
+      const result = await fetchUntilEventTarget(
+        sessionId,
+        batchCursorRef.current,
+        LOGS_EVENT_PAGE_SIZE
+      );
+      batchCursorRef.current = result.cursor;
+      setLogs((prev) => [...prev, ...result.logs]);
+      setHasMore(result.hasMore);
+    } catch {
+      // ignore
+    }
+    setIsLoadingMore(false);
+  };
+
+  return { logs, isLoading, hasMore, loadMore, isLoadingMore };
+};
+
 export const useListPamSessions = (
   projectId: string,
   options?: Omit<
@@ -252,6 +429,34 @@ export const useListPamSessions = (
       });
 
       return data.sessions;
+    },
+    ...options
+  });
+};
+
+// Account Policies
+export const useListPamAccountPolicies = (
+  projectId: string,
+  search?: string,
+  options?: Omit<
+    UseQueryOptions<
+      TPamAccountPolicy[],
+      unknown,
+      TPamAccountPolicy[],
+      ReturnType<typeof pamKeys.listAccountPolicies>
+    >,
+    "queryKey" | "queryFn"
+  >
+) => {
+  return useQuery({
+    queryKey: pamKeys.listAccountPolicies(projectId, search),
+    queryFn: async () => {
+      const { data } = await apiRequest.get<{ policies: TPamAccountPolicy[] }>(
+        "/api/v1/pam/account-policies",
+        { params: { projectId, search } }
+      );
+
+      return data.policies;
     },
     ...options
   });

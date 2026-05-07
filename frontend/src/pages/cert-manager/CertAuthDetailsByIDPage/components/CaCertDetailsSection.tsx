@@ -1,12 +1,13 @@
 import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
   Detail,
   DetailGroup,
   DetailLabel,
-  DetailValue,
-  UnstableCard,
-  UnstableCardContent,
-  UnstableCardHeader,
-  UnstableCardTitle
+  DetailValue
 } from "@app/components/v3";
 import { CaType, useGetCa } from "@app/hooks/api";
 import { TInternalCertificateAuthority } from "@app/hooks/api/ca/types";
@@ -40,11 +41,12 @@ export const CaCertDetailsSection = ({ caId }: Props) => {
   }
 
   return (
-    <UnstableCard className="mt-4 w-full">
-      <UnstableCardHeader className="border-b">
-        <UnstableCardTitle>Certificate Details</UnstableCardTitle>
-      </UnstableCardHeader>
-      <UnstableCardContent>
+    <Card className="mt-4 w-full">
+      <CardHeader className="border-b">
+        <CardTitle>Certificate Details</CardTitle>
+        <CardDescription>Subject and issuer information</CardDescription>
+      </CardHeader>
+      <CardContent>
         <DetailGroup>
           {ca.configuration.commonName && (
             <Detail>
@@ -88,7 +90,7 @@ export const CaCertDetailsSection = ({ caId }: Props) => {
             </Detail>
           )}
         </DetailGroup>
-      </UnstableCardContent>
-    </UnstableCard>
+      </CardContent>
+    </Card>
   );
 };

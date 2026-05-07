@@ -66,6 +66,7 @@ import { usePathAccessPolicies } from "@app/hooks/usePathAccessPolicies";
 import { useResizableColWidth } from "@app/hooks/useResizableColWidth";
 import { hasSecretReadValueOrDescribePermission } from "@app/lib/fn/permission";
 import { RequestAccessModal } from "@app/pages/secret-manager/SecretApprovalsPage/components/AccessApprovalRequest/components/RequestAccessModal";
+import { HoneyTokenListView } from "@app/pages/secret-manager/SecretDashboardPage/components/HoneyTokenListView";
 import { SecretRotationListView } from "@app/pages/secret-manager/SecretDashboardPage/components/SecretRotationListView";
 
 import { SecretTableResourceCount } from "../OverviewPage/components/SecretTableResourceCount";
@@ -325,6 +326,7 @@ const Page = () => {
     includeSecrets: canReadSecret && (isResourceTypeFiltered ? filter.include.secret : true),
     includeSecretRotations:
       canReadSecretRotations && (isResourceTypeFiltered ? filter.include.rotation : true),
+    includeHoneyTokens: true,
     tags: filter.tags
   });
 
@@ -345,6 +347,7 @@ const Page = () => {
     folders,
     dynamicSecrets,
     secretRotations,
+    honeyTokens,
     secrets,
     totalImportCount = 0,
     totalFolderCount = 0,
@@ -500,7 +503,8 @@ const Page = () => {
       (folders?.length || 0) -
       (secrets?.length || 0) -
       (dynamicSecrets?.length || 0) -
-      (secretRotations?.length || 0),
+      (secretRotations?.length || 0) -
+      (honeyTokens?.length || 0),
     0
   );
   const isNotEmpty = Boolean(
@@ -668,8 +672,7 @@ const Page = () => {
     const newChecks = { ...selectedSecrets };
 
     secrets?.forEach((secret) => {
-      // bulk actions don't apply to rotation secrets (move/delete)
-      if (secret.isRotatedSecret) return;
+      if (secret.isRotatedSecret || secret.isHoneyTokenSecret) return;
 
       if (allRowsSelectedOnPage.isChecked) {
         delete newChecks[secret.id];
@@ -873,7 +876,7 @@ const Page = () => {
             ,
             <a
               className="ml-1 text-mineshaft-300 underline decoration-primary-800 underline-offset-4 duration-200 hover:text-mineshaft-100 hover:decoration-primary-600"
-              href="https://infisical.com/docs/documentation/getting-started/api"
+              href="https://infisical.com/docs/api-reference/overview/introduction"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1094,6 +1097,7 @@ const Page = () => {
                   getMergedSecretsWithPending={getMergedSecretsWithPending}
                 />
               )}
+              {Boolean(honeyTokens?.length) && <HoneyTokenListView honeyTokens={honeyTokens} />}
               {canReadSecret && Boolean(mergedSecrets?.length) && (
                 <SecretListView
                   colWidth={colWidth}

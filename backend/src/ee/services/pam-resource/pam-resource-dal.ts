@@ -3,6 +3,7 @@ import RE2 from "re2";
 
 import { TDbClient } from "@app/db";
 import { TableName } from "@app/db/schemas";
+import { TPamResourceWithFavorite } from "@app/ee/services/pam-resource/pam-resource-types";
 import { DatabaseError } from "@app/lib/errors";
 import { ormify, selectAllTableCols } from "@app/lib/knex";
 import { OrderByDirection } from "@app/lib/types";
@@ -35,7 +36,8 @@ export const pamResourceDALFactory = (db: TDbClient) => {
       orderBy = PamResourceOrderBy.Name,
       orderDirection = OrderByDirection.ASC,
       filterResourceTypes,
-      metadataFilter
+      metadataFilter,
+      userId
     }: {
       projectId: string;
       search?: string;
@@ -45,12 +47,22 @@ export const pamResourceDALFactory = (db: TDbClient) => {
       orderDirection?: OrderByDirection;
       filterResourceTypes?: string[];
       metadataFilter?: Array<{ key: string; value?: string }>;
+      userId?: string;
     },
     tx?: Knex
-  ) => {
+  ): Promise<{ resources: TPamResourceWithFavorite[]; totalCount: number }> => {
     try {
       const dbInstance = tx || db.replicaNode();
       const query = dbInstance(TableName.PamResource).where(`${TableName.PamResource}.projectId`, projectId);
+
+      if (userId) {
+        void query.leftJoin(TableName.PamResourceFavorite, function joinFavorites() {
+          this.on(`${TableName.PamResourceFavorite}.pamResourceId`, `${TableName.PamResource}.id`).andOn(
+            `${TableName.PamResourceFavorite}.userId`,
+            db.raw("?", [userId])
+          );
+        });
+      }
 
       if (search) {
         // escape special characters (`%`, `_`) and the escape character itself (`\`)
@@ -78,8 +90,21 @@ export const pamResourceDALFactory = (db: TDbClient) => {
 
       void query.select(selectAllTableCols(TableName.PamResource));
 
+      if (userId) {
+        void query.select(
+          db.raw(
+            `CASE WHEN "${TableName.PamResourceFavorite}"."id" IS NOT NULL THEN true ELSE false END as "isFavorite"`
+          )
+        );
+      } else {
+        void query.select(db.raw(`false as "isFavorite"`));
+      }
+
       const direction = orderDirection === OrderByDirection.ASC ? "ASC" : "DESC";
 
+      if (userId) {
+        void query.orderByRaw(`"isFavorite" DESC`);
+      }
       void query.orderByRaw(`${TableName.PamResource}.?? COLLATE "en-x-icu" ${direction}`, [orderBy]);
 
       if (typeof limit === "number") {
@@ -89,7 +114,7 @@ export const pamResourceDALFactory = (db: TDbClient) => {
       const [resources, countResult] = await Promise.all([query, countQuery]);
       const totalCount = Number(countResult?.count || 0);
 
-      return { resources, totalCount };
+      return { resources: resources as TPamResourceWithFavorite[], totalCount };
     } catch (error) {
       throw new DatabaseError({ error, name: "Find PAM resources" });
     }
@@ -110,18 +135,83 @@ export const pamResourceDALFactory = (db: TDbClient) => {
     return byResourceId;
   };
 
-  const findByAdServerResourceId = async (adServerResourceId: string, tx?: Knex) => {
+  const findByDomainId = async (domainId: string, tx?: Knex) => {
     try {
       const resources = await (tx || db.replicaNode())(TableName.PamResource)
         .select(selectAllTableCols(TableName.PamResource))
-        .where(`${TableName.PamResource}.adServerResourceId`, adServerResourceId)
+        .where(`${TableName.PamResource}.domainId`, domainId)
         .orderBy(`${TableName.PamResource}.name`, "asc");
 
       return resources;
     } catch (error) {
-      throw new DatabaseError({ error, name: "Find PAM resources by AD server resource ID" });
+      throw new DatabaseError({ error, name: "Find PAM resources by domain ID" });
     }
   };
 
-  return { ...orm, findById, findByProjectId, findMetadataByResourceIds, findByAdServerResourceId };
+  const findByGatewayId = async (gatewayId: string, tx?: Knex) => {
+    const docs = await (tx || db.replicaNode())(TableName.PamResource)
+      .leftJoin(TableName.Project, `${TableName.PamResource}.projectId`, `${TableName.Project}.id`)
+      .where(`${TableName.PamResource}.gatewayId`, gatewayId)
+      .select(
+        db.ref("id").withSchema(TableName.PamResource),
+        db.ref("name").withSchema(TableName.PamResource),
+        db.ref("projectId").withSchema(TableName.PamResource),
+        db.ref("resourceType").withSchema(TableName.PamResource),
+        db.ref("name").withSchema(TableName.Project).as("projectName")
+      );
+
+    return docs;
+  };
+
+  const countByGatewayId = async (gatewayId: string, tx?: Knex) => {
+    const result = await (tx || db.replicaNode())(TableName.PamResource)
+      .where(`${TableName.PamResource}.gatewayId`, gatewayId)
+      .count("id")
+      .first();
+
+    return parseInt(String(result?.count || "0"), 10);
+  };
+
+  const countByProject = async (projectId: string, tx?: Knex): Promise<number> => {
+    const result = await (tx || db.replicaNode())(TableName.PamResource)
+      .where("projectId", projectId)
+      .count("id as count")
+      .first();
+    return Number((result as { count?: string | number })?.count ?? 0);
+  };
+
+  const countWithRotationByProject = async (projectId: string, tx?: Knex): Promise<number> => {
+    const result = await (tx || db.replicaNode())(TableName.PamResource)
+      .where("projectId", projectId)
+      .whereNotNull("encryptedRotationAccountCredentials")
+      .count("id as count")
+      .first();
+    return Number((result as { count?: string | number })?.count ?? 0);
+  };
+
+  const countByProjectGroupedByType = async (
+    projectId: string,
+    tx?: Knex
+  ): Promise<{ resourceType: string; count: number }[]> => {
+    const rows = (await (tx || db.replicaNode())(TableName.PamResource)
+      .select("resourceType")
+      .count("id as count")
+      .where("projectId", projectId)
+      .groupBy("resourceType")) as unknown as { resourceType: string; count: string | number }[];
+
+    return rows.map((row) => ({ resourceType: row.resourceType, count: Number(row.count) }));
+  };
+
+  return {
+    ...orm,
+    findById,
+    findByProjectId,
+    findMetadataByResourceIds,
+    findByDomainId,
+    findByGatewayId,
+    countByGatewayId,
+    countByProject,
+    countWithRotationByProject,
+    countByProjectGroupedByType
+  };
 };

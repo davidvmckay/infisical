@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { THsmServiceFactory } from "@app/ee/services/hsm/hsm-service";
 import { crypto } from "@app/lib/crypto/cryptography";
+import { initializePqcSupport } from "@app/lib/crypto/pqc";
 import { QueueWorkerProfile } from "@app/lib/types";
 import { TKmsRootConfigDALFactory } from "@app/services/kms/kms-root-config-dal";
 import { TSuperAdminDALFactory } from "@app/services/super-admin/super-admin-dal";
@@ -9,6 +10,7 @@ import { TSuperAdminDALFactory } from "@app/services/super-admin/super-admin-dal
 import { BadRequestError } from "../errors";
 import { removeTrailingSlash } from "../fn";
 import { CustomLogger } from "../logger/logger";
+import { ms } from "../ms";
 import { zpStr } from "../zod";
 
 export const GITLAB_URL = "https://gitlab.com";
@@ -131,13 +133,19 @@ const envSchema = z
       z.string().optional().default("audit_logs").describe("ClickHouse table name for audit logs")
     ),
     CLICKHOUSE_AUDIT_LOG_ENABLED: zodStrBool.default("true").describe("Enable inserting audit logs into ClickHouse"),
-    CLICKHOUSE_AUDIT_LOG_QUERY_ENABLED: zodStrBool
-      .default("false")
-      .describe("Enable querying audit logs from ClickHouse instead of Postgres"),
-    DISABLE_AUDIT_LOG_STORAGE: zodStrBool.default("false").optional().describe("Disable audit log storage"),
+    AUDIT_LOG_STREAMS_ENABLED: zodStrBool.default("true").describe("Enable sending audit logs to external log streams"),
+    DISABLE_AUDIT_LOG_STORAGE: zodStrBool.optional(), // deprecated: use DISABLE_POSTGRES_AUDIT_LOG_STORAGE instead
+    DISABLE_POSTGRES_AUDIT_LOG_STORAGE: z
+      .string()
+      .optional()
+      .transform((val) => (val === undefined ? undefined : val === "true"))
+      .describe("Disable PostgreSQL audit log storage"),
     GENERATE_SANITIZED_SCHEMA: zodStrBool
       .default("false")
       .describe("Generate sanitized schema with views after migrations"),
+    FAIL_ON_SANITIZED_SCHEMA_ERROR: zodStrBool
+      .default("false")
+      .describe("Exit startup when sanitized schema generation fails"),
     SANITIZED_SCHEMA_ROLE: zpStr(
       z.string().describe("PostgreSQL role to grant read access to the sanitized schema").optional()
     ),
@@ -195,6 +203,14 @@ const envSchema = z
     SMTP_PASSWORD: zpStr(z.string().optional()),
     SMTP_FROM_ADDRESS: zpStr(z.string().optional()),
     SMTP_FROM_NAME: zpStr(z.string().optional().default("Infisical")),
+    SMTP_HELO_HOST: zpStr(
+      z
+        .string()
+        .optional()
+        .describe(
+          "Hostname announced in the SMTP EHLO/HELO greeting. Defaults to the OS hostname, which may not be a valid FQDN inside containers."
+        )
+    ),
     SMTP_CUSTOM_CA_CERT: zpStr(
       z.string().optional().describe("Base64 encoded custom CA certificate PEM(s) for the SMTP server")
     ),
@@ -208,8 +224,11 @@ const envSchema = z
     // Telemetry
     TELEMETRY_ENABLED: zodStrBool.default("true"),
     POSTHOG_HOST: zpStr(z.string().optional().default("https://app.posthog.com")),
-    POSTHOG_PROJECT_API_KEY: zpStr(z.string().optional().default("phc_nSin8j5q2zdhpFDI1ETmFNUIuTG4DwKVyIigrY10XiE")),
+    POSTHOG_PROJECT_API_KEY: zpStr(z.string().optional().default("phc_swoSUd69FLA4ztGPkBhnNHDVbrssfPkuYEGCquN33FCX")),
     LOOPS_API_KEY: zpStr(z.string().optional()),
+    // HubSpot Forms API for capturing signups
+    HUBSPOT_PORTAL_ID: zpStr(z.string().optional()),
+    HUBSPOT_SIGNUP_FORM_ID: zpStr(z.string().optional()),
     // GitHub API token for upgrade path tool
     GITHUB_API_TOKEN: zpStr(z.string().optional()),
     // jwt options
@@ -220,6 +239,15 @@ const envSchema = z
     JWT_INVITE_LIFETIME: zpStr(z.string().default("1d")),
     JWT_MFA_LIFETIME: zpStr(z.string().default("5m")),
     JWT_PROVIDER_AUTH_LIFETIME: zpStr(z.string().default("15m")),
+    MAX_MACHINE_IDENTITY_TOKEN_AGE: zpStr(
+      z
+        .string()
+        .default("90d")
+        .transform((val) => Math.floor(ms(val) / 1000))
+    ),
+    LEGACY_IDENTITY_ACCESS_TOKEN_EXPIRATION_ENFORCED_AT: zpStr(
+      z.coerce.date().default(new Date("2026-05-04T00:00:00.000Z"))
+    ),
     // Oauth
     CLIENT_ID_GOOGLE_LOGIN: zpStr(z.string().optional()),
     CLIENT_SECRET_GOOGLE_LOGIN: zpStr(z.string().optional()),
@@ -290,6 +318,7 @@ const envSchema = z
       .transform((val) => val === "true" || IS_PACKAGED)
       .optional(),
     INFISICAL_CLOUD: zodStrBool.default("false"),
+    INFISICAL_DEDICATED: zodStrBool.default("false"),
     MAINTENANCE_MODE: zodStrBool.default("false"),
     CAPTCHA_SECRET: zpStr(z.string().optional()),
     CAPTCHA_SITE_KEY: zpStr(z.string().optional()),
@@ -446,6 +475,14 @@ const envSchema = z
         })
     ),
 
+    // Reverse Proxy -----------------------------------------------------------------------------
+    // Comma-separated list of trusted proxy CIDRs (e.g. "10.0.0.0/8,172.16.0.0/12") or
+    // proxy-addr aliases ("loopback", "linklocal", "uniquelocal"). When set, requests whose
+    // socket remote address is NOT in this set will have forwarded-IP headers ignored; the
+    // socket address is used as the real IP. When unset, legacy first-header-wins behavior
+    // is preserved for backwards compatibility.
+    TRUSTED_PROXY_CIDRS: zpStr(z.string().optional()),
+
     /* OracleDB ----------------------------------------------------------------------------- */
     TNS_ADMIN: zpStr(z.string().optional()),
 
@@ -459,6 +496,8 @@ const envSchema = z
   .transform((data) => ({
     ...data,
     SALT_ROUNDS: data.SALT_ROUNDS || data.BCRYPT_SALT_ROUND || 12,
+    DISABLE_POSTGRES_AUDIT_LOG_STORAGE:
+      data.DISABLE_POSTGRES_AUDIT_LOG_STORAGE ?? data.DISABLE_AUDIT_LOG_STORAGE ?? false,
     DB_READ_REPLICAS: data.DB_READ_REPLICAS
       ? databaseReadReplicaSchema.parse(JSON.parse(data.DB_READ_REPLICAS))
       : undefined,
@@ -563,6 +602,8 @@ export const initEnvConfig = async (
   if (superAdminDAL) {
     const fipsEnabled = await crypto.initialize(superAdminDAL, hsmService, kmsRootConfigDAL);
 
+    await initializePqcSupport();
+
     if (fipsEnabled) {
       const newEnvCfg = {
         ...parsedEnv.data,
@@ -653,8 +694,12 @@ export const overwriteSchema: {
     name: "Audit Logs",
     fields: [
       {
+        key: "DISABLE_POSTGRES_AUDIT_LOG_STORAGE",
+        description: "Disable PostgreSQL audit log storage"
+      },
+      {
         key: "DISABLE_AUDIT_LOG_STORAGE",
-        description: "Disable audit log storage"
+        description: "Legacy alias for DISABLE_POSTGRES_AUDIT_LOG_STORAGE (deprecated)"
       }
     ]
   },
@@ -923,6 +968,7 @@ export const formatSmtpConfig = () => {
   return {
     host: envCfg.SMTP_HOST,
     port: envCfg.SMTP_PORT,
+    name: envCfg.SMTP_HELO_HOST,
     auth:
       envCfg.SMTP_USERNAME && envCfg.SMTP_PASSWORD
         ? { user: envCfg.SMTP_USERNAME, pass: envCfg.SMTP_PASSWORD }

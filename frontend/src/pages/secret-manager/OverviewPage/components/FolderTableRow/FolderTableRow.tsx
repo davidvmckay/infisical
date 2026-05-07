@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { EditIcon, FolderIcon, InfoIcon, TrashIcon } from "lucide-react";
+import { EditIcon, FolderIcon, InfoIcon, TrashIcon, Undo2Icon } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 
 import {
   Checkbox,
+  IconButton,
+  TableCell,
+  TableRow,
   Tooltip,
   TooltipContent,
-  TooltipTrigger,
-  UnstableIconButton,
-  UnstableTableCell,
-  UnstableTableRow
+  TooltipTrigger
 } from "@app/components/v3";
+import { PendingAction } from "@app/hooks/api/secretFolders/types";
 
+import { pendingActionBorderClass, pendingActionRowClass } from "../pendingActionStyles";
 import { ResourceEnvironmentStatusCell } from "../ResourceEnvironmentStatusCell";
 
 type Props = {
@@ -24,6 +26,9 @@ type Props = {
   onToggleFolderSelect: (folderName: string) => void;
   onToggleFolderEdit: (name: string) => void;
   onToggleFolderDelete: (name: string) => void;
+  pendingAction?: PendingAction;
+  onBatchRevert?: (folderName: string) => void;
+  isSelectionDisabled?: boolean;
 };
 
 export const FolderTableRow = ({
@@ -35,7 +40,10 @@ export const FolderTableRow = ({
   onToggleFolderSelect,
   onToggleFolderEdit,
   onToggleFolderDelete,
-  onClick
+  onClick,
+  pendingAction,
+  onBatchRevert,
+  isSelectionDisabled
 }: Props) => {
   const [isClicking, setIsClicking] = useState(false);
   const handleClick = () => {
@@ -49,13 +57,17 @@ export const FolderTableRow = ({
   const isSingleEnvView = environments.length === 1;
 
   return (
-    <UnstableTableRow className="group" onClick={handleClick}>
-      <UnstableTableCell
-        className={
+    <TableRow
+      className={twMerge("group hover:z-10", pendingActionRowClass(pendingAction))}
+      onClick={handleClick}
+    >
+      <TableCell
+        className={twMerge(
           isSingleEnvView
             ? ""
-            : "sticky left-0 z-10 bg-container transition-colors duration-75 group-hover:bg-container-hover"
-        }
+            : "sticky left-0 z-10 bg-container transition-colors duration-75 group-hover:bg-container-hover",
+          pendingActionBorderClass(pendingAction)
+        )}
       >
         <Checkbox
           variant="project"
@@ -67,22 +79,36 @@ export const FolderTableRow = ({
           onClick={(e) => {
             e.stopPropagation();
           }}
-          className={twMerge("hidden group-hover:flex", isSelected && "flex")}
+          className={twMerge(
+            "hidden",
+            !isSelectionDisabled && "group-hover:flex",
+            isSelected && "flex"
+          )}
         />
         <FolderIcon
-          className={twMerge("block text-folder group-hover:!hidden", isSelected && "!hidden")}
+          className={twMerge(
+            "block text-folder",
+            !isSelectionDisabled && "group-hover:!hidden",
+            isSelected && "!hidden"
+          )}
         />
-      </UnstableTableCell>
-      <UnstableTableCell
+      </TableCell>
+      <TableCell
         isTruncatable
         colSpan={isSingleEnvView ? 2 : undefined}
         className={
           isSingleEnvView
-            ? "relative"
-            : "sticky left-10 z-10 border-r bg-container transition-all duration-75 group-hover:bg-container-hover group-hover:pr-16"
+            ? "relative transition-all duration-75"
+            : "sticky left-10 z-10 border-r bg-container transition-all duration-75 group-hover:bg-container-hover"
         }
       >
-        {folderName}
+        <span
+          className={twMerge(
+            pendingAction === PendingAction.Delete && "text-danger/75 line-through"
+          )}
+        >
+          {folderName}
+        </span>
         {description && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -91,41 +117,72 @@ export const FolderTableRow = ({
             <TooltipContent className="max-w-sm">{description}</TooltipContent>
           </Tooltip>
         )}
-        <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center transition-all duration-500 group-hover:space-x-1.5">
-          <Tooltip delayDuration={300} disableHoverableContent>
-            <TooltipTrigger>
-              <UnstableIconButton
-                variant="ghost"
-                size="xs"
-                className="w-0 overflow-hidden border-0 opacity-0 group-hover:w-7 group-hover:opacity-100"
-                onClick={(e) => {
-                  onToggleFolderEdit(folderName);
-                  e.stopPropagation();
-                }}
-              >
-                <EditIcon />
-              </UnstableIconButton>
-            </TooltipTrigger>
-            <TooltipContent>Edit Folder</TooltipContent>
-          </Tooltip>
-          <Tooltip delayDuration={300} disableHoverableContent>
-            <TooltipTrigger>
-              <UnstableIconButton
-                variant="ghost"
-                size="xs"
-                className="w-0 overflow-hidden border-0 opacity-0 group-hover:w-7 group-hover:opacity-100 hover:text-danger"
-                onClick={(e) => {
-                  onToggleFolderDelete(folderName);
-                  e.stopPropagation();
-                }}
-              >
-                <TrashIcon />
-              </UnstableIconButton>
-            </TooltipTrigger>
-            <TooltipContent>Delete Folder</TooltipContent>
-          </Tooltip>
+        <div
+          className={twMerge(
+            "absolute z-20",
+            "flex items-center rounded-md border border-border bg-container-hover px-0.5 py-0.5 shadow-md",
+            "pointer-events-none opacity-0 transition-all duration-300",
+            "group-hover:pointer-events-auto group-hover:gap-1 group-hover:opacity-100",
+            isSingleEnvView
+              ? "top-1/2 right-[2px] -translate-y-1/2"
+              : "top-1/2 right-[3px] -translate-y-1/2"
+          )}
+        >
+          {pendingAction !== PendingAction.Delete && (
+            <Tooltip disableHoverableContent>
+              <TooltipTrigger>
+                <IconButton
+                  variant="ghost"
+                  size="xs"
+                  className="w-0 overflow-hidden border-0 transition-all duration-300 group-hover:w-7"
+                  onClick={(e) => {
+                    onToggleFolderEdit(folderName);
+                    e.stopPropagation();
+                  }}
+                >
+                  <EditIcon />
+                </IconButton>
+              </TooltipTrigger>
+              <TooltipContent>Edit Folder</TooltipContent>
+            </Tooltip>
+          )}
+          {pendingAction ? (
+            <Tooltip disableHoverableContent>
+              <TooltipTrigger>
+                <IconButton
+                  variant="ghost"
+                  className="w-0 overflow-hidden border-0 transition-all duration-300 group-hover:w-7 hover:text-danger"
+                  size="xs"
+                  onClick={(e) => {
+                    onBatchRevert?.(folderName);
+                    e.stopPropagation();
+                  }}
+                >
+                  <Undo2Icon />
+                </IconButton>
+              </TooltipTrigger>
+              <TooltipContent>Discard pending changes</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Tooltip disableHoverableContent>
+              <TooltipTrigger>
+                <IconButton
+                  variant="ghost"
+                  size="xs"
+                  className="w-0 overflow-hidden border-0 transition-all duration-300 group-hover:w-7 hover:text-danger"
+                  onClick={(e) => {
+                    onToggleFolderDelete(folderName);
+                    e.stopPropagation();
+                  }}
+                >
+                  <TrashIcon />
+                </IconButton>
+              </TooltipTrigger>
+              <TooltipContent>Delete Folder</TooltipContent>
+            </Tooltip>
+          )}
         </div>
-      </UnstableTableCell>
+      </TableCell>
       {!isSingleEnvView &&
         environments.map(({ slug }, i) => {
           const isPresent = isFolderPresentInEnv(folderName, slug);
@@ -137,6 +194,6 @@ export const FolderTableRow = ({
             />
           );
         })}
-    </UnstableTableRow>
+    </TableRow>
   );
 };

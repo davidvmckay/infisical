@@ -199,7 +199,7 @@ export const useGetWorkspaceIntegrations = (
     queryKey: projectKeys.getProjectIntegrations(projectId),
     queryFn: () => fetchWorkspaceIntegrations(projectId),
     enabled: Boolean(projectId) && (options?.enabled ?? true),
-    refetchInterval: options?.refetchInterval ?? 4000
+    refetchInterval: options?.refetchInterval ?? 30_000
   });
 
 export const createWorkspace = (
@@ -272,13 +272,10 @@ export const useUpdateWorkspaceAuditLogsRetention = () => {
   const queryClient = useQueryClient();
 
   return useMutation<Project, object, UpdateAuditLogsRetentionDTO>({
-    mutationFn: async ({ projectSlug, auditLogsRetentionDays }) => {
-      const { data } = await apiRequest.put(
-        `/api/v1/projects/${projectSlug}/audit-logs-retention`,
-        {
-          auditLogsRetentionDays
-        }
-      );
+    mutationFn: async ({ projectId, auditLogsRetentionDays }) => {
+      const { data } = await apiRequest.put(`/api/v1/projects/${projectId}/audit-logs-retention`, {
+        auditLogsRetentionDays
+      });
       return data.project;
     },
     onSuccess: () => {
@@ -524,7 +521,20 @@ export const useListWorkspaceCertificates = ({
   profileIds,
   fromDate,
   toDate,
-  metadataFilter
+  metadataFilter,
+  extendedKeyUsage,
+  keyAlgorithm,
+  signatureAlgorithm,
+  keySizes,
+  caIds,
+  enrollmentTypes,
+  source,
+  notAfterFrom,
+  notAfterTo,
+  notBeforeFrom,
+  notBeforeTo,
+  sortBy,
+  sortOrder
 }: {
   projectId: string;
   offset: number;
@@ -538,6 +548,19 @@ export const useListWorkspaceCertificates = ({
   fromDate?: Date;
   toDate?: Date;
   metadataFilter?: Array<{ key: string; value?: string }>;
+  extendedKeyUsage?: string;
+  keyAlgorithm?: string | string[];
+  signatureAlgorithm?: string;
+  keySizes?: number[];
+  caIds?: string[];
+  enrollmentTypes?: string[];
+  source?: string | string[];
+  notAfterFrom?: Date;
+  notAfterTo?: Date;
+  notBeforeFrom?: Date;
+  notBeforeTo?: Date;
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
 }) => {
   return useQuery({
     queryKey: projectKeys.specificProjectCertificates({
@@ -552,7 +575,20 @@ export const useListWorkspaceCertificates = ({
       profileIds,
       fromDate,
       toDate,
-      metadataFilter
+      metadataFilter,
+      extendedKeyUsage,
+      keyAlgorithm,
+      signatureAlgorithm,
+      keySizes,
+      caIds,
+      enrollmentTypes,
+      source,
+      notAfterFrom,
+      notAfterTo,
+      notBeforeFrom,
+      notBeforeTo,
+      sortBy,
+      sortOrder
     }),
     queryFn: async () => {
       const {
@@ -570,7 +606,20 @@ export const useListWorkspaceCertificates = ({
           ...(profileIds && profileIds.length > 0 && { profileIds }),
           ...(fromDate && { fromDate: fromDate.toISOString() }),
           ...(toDate && { toDate: toDate.toISOString() }),
-          ...(metadataFilter && metadataFilter.length > 0 && { metadata: metadataFilter })
+          ...(metadataFilter && metadataFilter.length > 0 && { metadata: metadataFilter }),
+          ...(extendedKeyUsage && { extendedKeyUsage }),
+          ...(keyAlgorithm && { keyAlgorithm }),
+          ...(signatureAlgorithm && { signatureAlgorithm }),
+          ...(keySizes && keySizes.length > 0 && { keySizes }),
+          ...(caIds && caIds.length > 0 && { caIds }),
+          ...(enrollmentTypes && enrollmentTypes.length > 0 && { enrollmentTypes }),
+          ...(source && { source }),
+          ...(notAfterFrom && { notAfterFrom: notAfterFrom.toISOString() }),
+          ...(notAfterTo && { notAfterTo: notAfterTo.toISOString() }),
+          ...(notBeforeFrom && { notBeforeFrom: notBeforeFrom.toISOString() }),
+          ...(notBeforeTo && { notBeforeTo: notBeforeTo.toISOString() }),
+          ...(sortBy && { sortBy }),
+          ...(sortOrder && { sortOrder })
         }
       );
 

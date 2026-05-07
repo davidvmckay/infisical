@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   CertificateAuthoritiesSchema,
   DynamicSecretsSchema,
+  HoneyTokensSchema,
   IdentityProjectAdditionalPrivilegeSchema,
   IntegrationAuthsSchema,
   InternalCertificateAuthoritiesSchema,
@@ -106,6 +107,18 @@ export const sapPubSchema = SecretApprovalPoliciesSchema.merge(
     projectId: z.string()
   })
 );
+
+export const SanitizedUserSchema = UsersSchema.pick({
+  username: true,
+  email: true,
+  isEmailVerified: true,
+  firstName: true,
+  lastName: true,
+  authMethods: true,
+  id: true
+}).extend({
+  publicKey: z.string().nullable().optional()
+});
 
 export const sanitizedServiceTokenUserSchema = UsersSchema.pick({
   authMethods: true,
@@ -254,6 +267,28 @@ export const SanitizedDynamicSecretSchema = DynamicSecretsSchema.omit({
   metadata: ResourceMetadataNonEncryptionSchema.optional()
 });
 
+export const SanitizedHoneyTokenSchema = HoneyTokensSchema.pick({
+  id: true,
+  name: true,
+  description: true,
+  type: true,
+  status: true,
+  projectId: true,
+  folderId: true,
+  secretsMapping: true,
+  createdAt: true,
+  updatedAt: true
+}).extend({
+  environment: z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string()
+  }),
+  folder: z.object({
+    path: z.string()
+  })
+});
+
 export const SanitizedProjectSchema = ProjectsSchema.pick({
   id: true,
   name: true,
@@ -289,7 +324,12 @@ export const InternalCertificateAuthorityResponseSchema = CertificateAuthorities
   InternalCertificateAuthoritiesSchema.omit({
     caId: true,
     notAfter: true,
-    notBefore: true
+    notBefore: true,
+    autoRenewalEnabled: true,
+    autoRenewalDaysBeforeExpiry: true,
+    lastRenewalStatus: true,
+    lastRenewalMessage: true,
+    lastRenewalAt: true
   })
 ).extend({
   requireTemplateForIssuance: z.boolean().optional(),
